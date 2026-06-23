@@ -148,7 +148,12 @@ script BoardController extends Logic
         -- ScreenToLocalUIPosition returns coords relative to the grid pivot (center); shift to a
         -- top-left origin and flip y (UI y is up) so row 0 = topmost.
         local gt = self:GridTransform()
-        if not isvalid(gt) then return { col = 0, row = 0 } end
+        if not isvalid(gt) then
+            -- Should be unreachable at runtime (ClientOnly, after UI load). Surface mis-config
+            -- instead of silently snapping every touch to cell (0,0).
+            log_error("[BoardController] ScreenToCell: grid transform not ready")
+            return { col = 0, row = 0 }
+        end
         local lp = _UILogic:ScreenToLocalUIPosition(touchPoint, gt)
         local gw = self.COLS * self.CellW
         local gh = self.ROWS * self.CellH
@@ -236,6 +241,9 @@ script BoardController extends Logic
 
     method void UnbindInput()
         -- Disconnects all touch handlers (called by the session at run end / map leave).
+        -- If the panel is already invalid (entity destroyed), the engine has torn down its event
+        -- subscriptions with it, so the stored handler tokens reference nothing live: just clear
+        -- them and skip DisconnectEvent (calling it on a dead entity would itself fault). No leak.
         if not isvalid(self.touchPanel) then
             self.downHandler = nil
             self.dragHandler = nil
