@@ -15,7 +15,7 @@
     "Json": {
       "name": "RankingConfigDataSet",
       "id": "15789ee4-9011-48e9-b587-1edbd19ed530",
-      "serveronly": true,
+      "serveronly": false,
       "syncDataSetWebUrl": "",
       "dynamicloading": 0
     }
