@@ -61,6 +61,8 @@ script GameSession extends Component
     method void OnReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
         -- Server reply, bridged from SeedService.ReceiveSeed. Ranked-already-played shows a notice;
         -- otherwise build the board from the seed, bind drag input, and start the 120s timer.
+        -- dateKey is accepted to match the bridge signature but intentionally unused here: the run
+        -- token already encodes the date server-side, so the client never needs it.
         if alreadyPlayed then
             if _ResultController ~= nil then _ResultController:ShowAlreadyPlayed(personalBest) end
             log("[GameSession] ranked already played today")
@@ -98,8 +100,13 @@ script GameSession extends Component
         if not self.active then return end
         self.timeLeft = self.timeLeft - delta
         if self.timeLeft <= 0 then
+            -- Expiry frame: paint the HUD to empty, end the run, and return so the active-path HUD
+            -- update below never runs after EndSession has cleared self.active.
             self.timeLeft = 0
+            _HudController:SetTimeRatio(0)
+            _HudController:SetTimeText(0)
             self:EndSession()
+            return
         end
         _HudController:SetTimeRatio(self.timeLeft / 120)
         _HudController:SetTimeText(math.ceil(self.timeLeft))

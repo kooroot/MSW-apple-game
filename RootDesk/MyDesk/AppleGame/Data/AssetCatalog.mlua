@@ -20,8 +20,6 @@ script AssetCatalog extends Logic
     property string SfxClearRUID = "1b3f41dc6ed84a9a95732c2b620b6393"
     property string SfxFailRUID = "174d501eccd04eadbd6c6411d4ade7e7"
     property string SfxTickRUID = "778160a185c4464ea829b609d7afeea1"
-    -- UI button click. Its own field (independent of the tick), seeded with the short tick sound for
-    -- now so clicks have audible feedback; swap to a dedicated click RUID later without touching callers.
     property string SfxClickRUID = "778160a185c4464ea829b609d7afeea1"
 
     method string IconRUID(integer value)
@@ -57,7 +55,9 @@ script AssetCatalog extends Logic
     end
 
     method string SfxClick()
-        -- SFX RUID for a UI button click (may be "" -> PlaySound is a safe no-op).
+        -- SFX RUID for a UI button click (may be "" -> PlaySound is a safe no-op). Its own field,
+        -- seeded with the short tick sound for now so clicks have audible feedback; swap to a
+        -- dedicated click RUID later without touching callers.
         return self.SfxClickRUID
     end
 

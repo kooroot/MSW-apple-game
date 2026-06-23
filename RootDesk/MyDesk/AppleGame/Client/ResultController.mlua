@@ -75,8 +75,8 @@ script ResultController extends Logic
     method void OnRetry()
         -- Closes the popup and restarts a session in the same mode. GameSession is a map @Component
         -- (Task 6); resolve it off the local player's current map (map-name independent) so an early/
-        -- off-map click is a safe no-op.
-        _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
+        -- off-map click is a safe no-op. _AssetCatalog is a @Logic global -> guard with ~= nil.
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
         self:Hide()
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
@@ -92,7 +92,7 @@ script ResultController extends Logic
 
     method void OnRank()
         -- Closes the popup and opens the leaderboard (LeaderboardController ships in Task 8).
-        _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
         self:Hide()
         if _LeaderboardController ~= nil then _LeaderboardController:Open(1) end
     end

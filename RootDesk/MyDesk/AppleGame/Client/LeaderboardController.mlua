@@ -72,7 +72,10 @@ script LeaderboardController extends Logic
     method void PlayClick()
         -- Plays the shared UI click SFX. Called from the tab/close button closures only (not from
         -- SelectTab/Hide, which also run programmatically/server-side) so a click sounds exactly once.
-        _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
+        -- _AssetCatalog is a @Logic global -> guard with ~= nil (not isvalid), matching SelectTab.
+        if _AssetCatalog ~= nil then
+            _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
+        end
     end
 
     method void Open(integer boardId)
