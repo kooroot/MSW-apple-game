@@ -13,8 +13,8 @@ script ScoreService extends Logic
         if #moves > self.MAX_MOVES then return { ok = false, reason = "bad_payload" } end
 
         local windowMax = self.GAME_SECONDS + self.GRACE_SECONDS
-        -- Client-reported elapsed must be within the window (and non-negative).
-        if clientElapsed < 0 or clientElapsed > windowMax then return { ok = false, reason = "timing" } end
+        -- Client-reported elapsed must be within the window (and non-negative). NaN (x ~= x) fails closed.
+        if clientElapsed ~= clientElapsed or clientElapsed < 0 or clientElapsed > windowMax then return { ok = false, reason = "timing" } end
 
         local maxCol = _PuzzleCore.COLS - 1
         local maxRow = _PuzzleCore.ROWS - 1
@@ -23,12 +23,17 @@ script ScoreService extends Logic
             local m = moves[i]
             if type(m) ~= "table" or type(m.rect) ~= "table" then return { ok = false, reason = "bad_payload" } end
             local rc = m.rect
-            if rc.c1 == nil or rc.r1 == nil or rc.c2 == nil or rc.r2 == nil then return { ok = false, reason = "bad_payload" } end
+            -- Coordinates cross the RPC boundary inside an attacker-controlled table (untyped). A non-numeric
+            -- field (string/bool/table) would crash the comparisons below at this anti-cheat trust boundary,
+            -- so type-guard first (type(x)~="number" also subsumes nil). The %1 check rejects fractional/NaN/inf
+            -- coords (NaN%1->NaN ~= 0) before they can index grid[r][5.5] -> nil; integer-valued floats pass.
+            if type(rc.c1) ~= "number" or type(rc.r1) ~= "number" or type(rc.c2) ~= "number" or type(rc.r2) ~= "number" then return { ok = false, reason = "bad_payload" } end
+            if rc.c1 % 1 ~= 0 or rc.r1 % 1 ~= 0 or rc.c2 % 1 ~= 0 or rc.r2 % 1 ~= 0 then return { ok = false, reason = "bad_payload" } end
             if rc.c1 < 0 or rc.c1 > maxCol or rc.c2 < 0 or rc.c2 > maxCol then return { ok = false, reason = "bad_payload" } end
             if rc.r1 < 0 or rc.r1 > maxRow or rc.r2 < 0 or rc.r2 > maxRow then return { ok = false, reason = "bad_payload" } end
             local t = m.t
             if type(t) ~= "number" then return { ok = false, reason = "bad_payload" } end
-            if t < 0 or t > windowMax then return { ok = false, reason = "timing" } end
+            if t ~= t or t < 0 or t > windowMax then return { ok = false, reason = "timing" } end
             if t < prevT then return { ok = false, reason = "timing" } end   -- timestamps must be non-decreasing
             prevT = t
         end

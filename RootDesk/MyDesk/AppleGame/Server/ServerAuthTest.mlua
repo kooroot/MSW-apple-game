@@ -192,5 +192,11 @@ script ServerAuthTest extends Logic
             local rLie = _ScoreService:SubmitFor(uid, s5.token, { mv5 }, 9999, 5.0)
             self:Expect("submit_score_lie_blocked", rLie.accepted == false and rLie.reason == "replay_mismatch")
         end
+
+        -- 8) Non-numeric coordinate must be rejected as bad_payload, NOT crash the handler (trust-boundary guard).
+        local s6 = _SeedService:IssueFor(uid, "single")
+        local strMove = { rect = { c1 = "5", r1 = 0, c2 = 6, r2 = 0 }, t = 1.0 }
+        local rStr = _ScoreService:SubmitFor(uid, s6.token, { strMove }, 0, 5.0)
+        self:Expect("submit_nonnumeric_coord_blocked", rStr.accepted == false and rStr.reason == "bad_payload")
     end
 end
