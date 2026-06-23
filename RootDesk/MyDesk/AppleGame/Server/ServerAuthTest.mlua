@@ -213,6 +213,16 @@ script ServerAuthTest extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void SetPersonalBestForTest(string userId, integer value)
+        -- Test-only: forces the stored personal best to a known value so the keep-max / read-only
+        -- contracts can be exercised against a controlled baseline (keep-max otherwise masks a
+        -- below-current wrongful write). Writes the canonical "personalBest" key directly.
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local err = storage:SetAndWait("personalBest", tostring(value))
+        log("[TEST] set personalBest=" .. tostring(value) .. " err=" .. tostring(err))
+    end
+
+    @ExecSpace("ServerOnly")
     method void TestRankedSeam()
         -- Proves a ranked ACCEPT does not crash on the absent _LeaderboardService and logs the [SEAM]
         -- warning instead. Clears today's ranked attempt FIRST so the accept path runs on every call
@@ -227,15 +237,19 @@ script ServerAuthTest extends Logic
         local mv = self:FindOneValidPairOnBoard(r.seed)
         self:Expect("seam_found_valid_move", mv ~= nil)
         if mv ~= nil then
+            -- Force PB BELOW the ranked score first, so the read-only assertion is MEANINGFUL: keep-max
+            -- (SetPersonalBestIfHigher returns current when score<=current) would mask a wrongful
+            -- below-PB write. With PB=0 and ranked finalScore=2, a wrongful keep-max(2) would raise PB to
+            -- 2; asserting it stays 0 proves the ranked accept never writes the single-mode PB at all.
+            self:SetPersonalBestForTest(uid, 0)
             local pbBefore = _RankAttemptStore:GetPersonalBest(uid)
             local res = _ScoreService:SubmitFor(uid, r.token, { mv }, 2, 5.0)
             -- Accept must succeed even though _LeaderboardService is absent (guarded seam logs a warning).
             self:Expect("seam_ranked_accepts", res.accepted == true and res.reason == "ok")
             self:Expect("seam_leaderboard_absent", _LeaderboardService == nil)  -- Plan 3 not installed yet
-            -- Ranked accept reads PB read-only and must NOT alter the single-mode best (precise contract,
-            -- holds regardless of prior PB magnitude; replaces the state-fragile pb >= finalScore check).
+            -- pbBefore is forced to 0 < finalScore(2); a wrongful keep-max write would make pbAfter==2.
             local pbAfter = _RankAttemptStore:GetPersonalBest(uid)
-            self:Expect("ranked_does_not_alter_pb", pbAfter == pbBefore)
+            self:Expect("ranked_does_not_alter_pb", pbAfter == pbBefore and pbAfter == 0)
         end
     end
 
