@@ -155,4 +155,21 @@ script PuzzleCoreTest extends Logic
         local bad = _PuzzleCore:Replay(0x12345678, { { rect = { c1 = 0, r1 = 0, c2 = 0, r2 = 0 }, t = 1.0 } })
         self:Expect("replay_invalid_move_short_circuits", bad.ok == false)
     end
+
+    method integer BoardChecksum(integer seed)
+        -- Folds the whole board into a 32-bit checksum (row-major) for snapshot comparison.
+        local g = _PuzzleCore:GenerateBoard(seed)
+        local acc = 0
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            for c = 0, _PuzzleCore.COLS - 1 do
+                acc = ((acc * 31) + g[r][c]) & 0xFFFFFFFF
+            end
+        end
+        return acc
+    end
+
+    method void TestGoldenBoard()
+        -- Regression lock: board output for the fixed seed must never silently change.
+        self:Expect("golden_checksum_12345678", self:BoardChecksum(0x12345678) == 1433305115)
+    end
 end
