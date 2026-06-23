@@ -1,0 +1,19 @@
+@Logic
+script PuzzleCore extends Logic
+    property integer COLS = 17
+    property integer ROWS = 10
+
+    method table GenerateBoard(integer seed)
+        -- Builds the 10x17 row-major board of 1..9 from the deterministic RNG (170 draws).
+        local grid = {}
+        local s = _SeededRng:Normalize(seed)
+        for r = 0, self.ROWS - 1 do
+            grid[r] = {}
+            for c = 0, self.COLS - 1 do
+                s = _SeededRng:Next(s)
+                grid[r][c] = _SeededRng:MapRange(s, 1, 9)
+            end
+        end
+        return grid
+    end
+end

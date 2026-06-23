@@ -56,4 +56,32 @@ script PuzzleCoreTest extends Logic
         self:Expect("mix32_is_next_of_normalize", _SeededRng:Mix32(42) == _SeededRng:Next(_SeededRng:Normalize(42)))
         self:Expect("golden_next_12345", _SeededRng:Next(12345) == 3336926330)
     end
+
+    method void TestGenerateBoard()
+        -- Verifies board dimensions, value range, determinism, and seed sensitivity.
+        local g = _PuzzleCore:GenerateBoard(0x12345678)
+        local okRange = true
+        local count = 0
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            for c = 0, _PuzzleCore.COLS - 1 do
+                local v = g[r][c]
+                if v == nil or v < 1 or v > 9 then okRange = false end
+                count += 1
+            end
+        end
+        self:Expect("board_has_170_cells", count == 170)
+        self:Expect("board_values_1_9", okRange)
+
+        local g2 = _PuzzleCore:GenerateBoard(0x12345678)
+        self:Expect("board_deterministic", g[0][0] == g2[0][0] and g[9][16] == g2[9][16])
+
+        local h = _PuzzleCore:GenerateBoard(0x9999AAAA)
+        local anyDiff = false
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            for c = 0, _PuzzleCore.COLS - 1 do
+                if g[r][c] ~= h[r][c] then anyDiff = true end
+            end
+        end
+        self:Expect("board_seed_sensitive", anyDiff)
+    end
 end
