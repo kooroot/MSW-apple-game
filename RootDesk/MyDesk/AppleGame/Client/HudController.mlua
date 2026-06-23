@@ -1,0 +1,58 @@
+@Logic
+@ExecSpace("ClientOnly")
+script HudController extends Logic
+
+    property TextComponent modeText = "8f218160-2e92-4319-bcbf-bf97cd3bedc2"
+    property TextComponent scoreValue = "e427a0f5-2516-4f2b-8ebd-0f21de0174c4"
+    property TextComponent timeText = "e84fe07e-a0c8-4cd7-aa0c-978117103c33"
+    property SpriteGUIRendererComponent timerFill = "2b1bbb55-41a4-4f9b-b0cf-dd158c93c0c1"
+
+    method void OnBeginPlay()
+        -- Initializes the HUD to a clean zero/full state at world start.
+        self:SetScore(0)
+        self:SetTimeRatio(1.0)
+        self:SetTimeText(120)
+        log("[HudController] ready")
+    end
+
+    method void SetMode(string mode)
+        -- Sets the visible mode label from the RPC mode string.
+        if not isvalid(self.modeText) then return end
+        if mode == "ranked" then
+            self.modeText.Text = "랭크"
+        elseif mode == "single" then
+            self.modeText.Text = "싱글"
+        else
+            self.modeText.Text = mode
+        end
+    end
+
+    method void SetScore(integer score)
+        -- Updates the score number readout.
+        if not isvalid(self.scoreValue) then return end
+        self.scoreValue.Text = tostring(score)
+    end
+
+    method void SetTimeRatio(number ratio)
+        -- Drains the timer bar (1.0 full -> 0.0 empty) and recolors green/yellow/red by urgency.
+        if not isvalid(self.timerFill) then return end
+        local r = ratio
+        if r < 0 then r = 0 end
+        if r > 1 then r = 1 end
+        self.timerFill.FillAmount = r
+        if r > 0.5 then
+            self.timerFill.Color = Color(0.30, 0.85, 0.39, 1)
+        elseif r > 0.2 then
+            self.timerFill.Color = Color(1.0, 0.84, 0.29, 1)
+        else
+            self.timerFill.Color = Color(0.93, 0.27, 0.27, 1)
+        end
+    end
+
+    method void SetTimeText(integer secondsLeft)
+        -- Sets the seconds-remaining text.
+        if not isvalid(self.timeText) then return end
+        self.timeText.Text = tostring(secondsLeft)
+    end
+
+end
