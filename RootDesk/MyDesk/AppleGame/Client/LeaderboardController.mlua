@@ -12,19 +12,20 @@ script LeaderboardController extends Logic
     property integer PAGE_SIZE = 20
 
     -- UI refs injected by the UIBuilder bind step (placeholder UUIDs until then).
-    property Entity panel = "39d0ed8b-2c4c-4631-b9fb-177f6d9e9b3d"
-    property Entity dimmer = "9717bb42-dd79-43aa-832e-d61a931c5248"
-    property Entity listRoot = "16b152a0-478b-4e56-9b1b-ce0ea7c01d49"
-    property Entity rowTemplate = "a8b8981c-e082-46a1-b416-b93df36c07c4"
-    property Entity multiLocked = "22a24f74-8db9-4fdb-be37-f5fed4cb84a6"
-    property TextComponent myRank = "18403f5a-6179-4948-b025-a981ca584716"
-    property TextComponent singlePB = "f0cab94c-13d3-42e4-b141-aed3bc4537a6"
-    property ButtonComponent tabDay = "3882e9cf-f47d-4cc6-9668-7664273281a7"
-    property ButtonComponent tabWeek = "75cad766-7316-4292-975c-82c1109ed029"
-    property ButtonComponent tabAll = "67571265-b4ff-4fe8-bb4d-e7feb9825b2c"
-    property ButtonComponent tabSingle = "b80e5b8a-d413-43bd-b2e5-86cf1de5d760"
-    property ButtonComponent tabMulti = "a32878a5-8a3c-48e4-b55f-163897e2043b"
-    property ButtonComponent btnClose = "5226f3ed-69c4-46c1-a012-25c3fba90b17"
+    property Entity panel = "1a533067-3417-4130-9dae-09f58b2df52e"
+    property Entity dimmer = "39317831-573a-4cdf-a8fb-ae4d18881e47"
+    property Entity listRoot = "6546d4f1-6c33-4e55-9ae3-7b42682a47e3"
+    property Entity rowTemplate = "9dfa252c-f40d-4ac0-ac8b-438c9d46d599"
+    property Entity multiLocked = "95b9306e-84e6-4320-a3b4-fd5c71929904"
+    property Entity staleLabel = "750230e1-0d4a-4334-98a6-804c29a9c5c0"
+    property TextComponent myRank = "09db5e69-d125-4dfd-82c0-a3c90b9a21f3"
+    property TextComponent singlePB = "c3529c27-be33-4b54-bc78-8a5b38a67af5"
+    property ButtonComponent tabDay = "98885dc2-c545-432a-afc6-9779c00de8be"
+    property ButtonComponent tabWeek = "f245df6d-7fd8-4ab5-956d-3894ca588e6b"
+    property ButtonComponent tabAll = "58dcf210-621d-4013-b4e1-ae7340040429"
+    property ButtonComponent tabSingle = "2470dc5a-bd0c-4622-bf0f-6c9a056dbc64"
+    property ButtonComponent tabMulti = "c9d956a0-7cf4-4eba-ac46-55dffd0c177c"
+    property ButtonComponent btnClose = "0d526fda-0c0d-42b9-886c-c47e971f3da6"
 
     -- Cloned row entities (table-valued) and EventHandlerBase tokens must be `any`
     -- (mlua has no untyped instance fields; EventHandlerBase cannot be a typed property).
@@ -76,25 +77,30 @@ script LeaderboardController extends Logic
     end
 
     method void ShowRankingPanel()
-        -- Ranking tabs (Day/Week/AllTime): show the row list + my-rank, hide single/multi panels.
+        -- Ranking tabs (Day/Week/AllTime): show the row list + my-rank + the snapshot-staleness
+        -- note, hide single/multi panels.
         if isvalid(self.listRoot) then self.listRoot.Enable = true end
         if isvalid(self.myRank) then self.myRank.Entity.Enable = true end
+        if isvalid(self.staleLabel) then self.staleLabel.Enable = true end
         if isvalid(self.singlePB) then self.singlePB.Entity.Enable = false end
         if isvalid(self.multiLocked) then self.multiLocked.Enable = false end
     end
 
     method void ShowSinglePanel()
-        -- Single tab: show only the personal-best label.
+        -- Single tab: show only the personal-best label. The stale note is hidden here (a personal
+        -- best is live, not a 30-min snapshot).
         if isvalid(self.listRoot) then self.listRoot.Enable = false end
         if isvalid(self.myRank) then self.myRank.Entity.Enable = false end
+        if isvalid(self.staleLabel) then self.staleLabel.Enable = false end
         if isvalid(self.singlePB) then self.singlePB.Entity.Enable = true end
         if isvalid(self.multiLocked) then self.multiLocked.Enable = false end
     end
 
     method void ShowMultiPanel()
-        -- Multi tab (Phase 2): show only the locked placeholder.
+        -- Multi tab (Phase 2): show only the locked placeholder; hide the stale note too.
         if isvalid(self.listRoot) then self.listRoot.Enable = false end
         if isvalid(self.myRank) then self.myRank.Entity.Enable = false end
+        if isvalid(self.staleLabel) then self.staleLabel.Enable = false end
         if isvalid(self.singlePB) then self.singlePB.Entity.Enable = false end
         if isvalid(self.multiLocked) then self.multiLocked.Enable = true end
     end
@@ -125,6 +131,9 @@ script LeaderboardController extends Logic
         -- for a tab the user already left is dropped by OnReceiveLeaderboard's guard.
         self.currentTab = boardId
         self:PaintTabs(boardId)
+        -- Service refs are @Logic globals (not Entities/Components), so the existence check is
+        -- `~= nil`, NOT isvalid() -- do not "fix" these to isvalid(): isvalid is for entity/component
+        -- handles and would be wrong here. They are nil on a side where the Logic isn't registered.
         if boardId == self.BOARD_DAY or boardId == self.BOARD_WEEK or boardId == self.BOARD_ALLTIME then
             self:ShowRankingPanel()
             if _LeaderboardService ~= nil then _LeaderboardService:RequestLeaderboard(boardId, 1) end
@@ -178,7 +187,9 @@ script LeaderboardController extends Logic
                 self.myRank.Text = "내 순위 - (기록 없음)"
             end
         end
-        log("[LeaderboardController] rendered board=" .. tostring(boardId) .. " rows=" .. tostring(#entries) .. " stale=" .. tostring(stale))
+        -- Log the count actually rendered (#self.rows), not #entries: a mid-loop Clone failure would
+        -- make them differ, and the verify step checks rendered rows.
+        log("[LeaderboardController] rendered board=" .. tostring(boardId) .. " rows=" .. tostring(#self.rows) .. " stale=" .. tostring(stale))
     end
 
     method void Hide()

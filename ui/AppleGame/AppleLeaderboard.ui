@@ -1,7 +1,7 @@
 {
   "Id": "",
   "GameId": "",
-  "EntryKey": "ui://e294d9b2-16fc-412e-8acb-74eba1a9ae80",
+  "EntryKey": "ui://bb05ebc4-fe48-42c9-b8f0-373f00d3f848",
   "ContentType": "x-mod/ui",
   "Content": "",
   "Usage": 0,
@@ -14,7 +14,7 @@
     "Use": "Binary",
     "Entities": [
       {
-        "id": "e294d9b2-16fc-412e-8acb-74eba1a9ae80",
+        "id": "bb05ebc4-fe48-42c9-b8f0-373f00d3f848",
         "path": "/ui/AppleLeaderboard",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.UIGroupComponent,MOD.Core.CanvasGroupComponent",
         "jsonString": {
@@ -113,7 +113,7 @@
         }
       },
       {
-        "id": "9717bb42-dd79-43aa-832e-d61a931c5248",
+        "id": "39317831-573a-4cdf-a8fb-ae4d18881e47",
         "path": "/ui/AppleLeaderboard/Dimmer",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent",
         "jsonString": {
@@ -259,7 +259,7 @@
         }
       },
       {
-        "id": "39d0ed8b-2c4c-4631-b9fb-177f6d9e9b3d",
+        "id": "1a533067-3417-4130-9dae-09f58b2df52e",
         "path": "/ui/AppleLeaderboard/Panel",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent",
         "jsonString": {
@@ -405,7 +405,7 @@
         }
       },
       {
-        "id": "3731e452-3dac-472b-a7ae-73c79cfaa705",
+        "id": "c8b5b6e0-a59c-4deb-b9ae-4e2c975fa2d7",
         "path": "/ui/AppleLeaderboard/Panel/Title",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -608,7 +608,7 @@
         }
       },
       {
-        "id": "3882e9cf-f47d-4cc6-9668-7664273281a7",
+        "id": "98885dc2-c545-432a-afc6-9779c00de8be",
         "path": "/ui/AppleLeaderboard/Panel/TabDay",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.ButtonComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -861,7 +861,7 @@
         }
       },
       {
-        "id": "75cad766-7316-4292-975c-82c1109ed029",
+        "id": "f245df6d-7fd8-4ab5-956d-3894ca588e6b",
         "path": "/ui/AppleLeaderboard/Panel/TabWeek",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.ButtonComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -1114,7 +1114,7 @@
         }
       },
       {
-        "id": "67571265-b4ff-4fe8-bb4d-e7feb9825b2c",
+        "id": "58dcf210-621d-4013-b4e1-ae7340040429",
         "path": "/ui/AppleLeaderboard/Panel/TabAll",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.ButtonComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -1367,7 +1367,7 @@
         }
       },
       {
-        "id": "b80e5b8a-d413-43bd-b2e5-86cf1de5d760",
+        "id": "2470dc5a-bd0c-4622-bf0f-6c9a056dbc64",
         "path": "/ui/AppleLeaderboard/Panel/TabSingle",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.ButtonComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -1620,7 +1620,7 @@
         }
       },
       {
-        "id": "a32878a5-8a3c-48e4-b55f-163897e2043b",
+        "id": "c9d956a0-7cf4-4eba-ac46-55dffd0c177c",
         "path": "/ui/AppleLeaderboard/Panel/TabMulti",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.ButtonComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -1873,7 +1873,7 @@
         }
       },
       {
-        "id": "16b152a0-478b-4e56-9b1b-ce0ea7c01d49",
+        "id": "6546d4f1-6c33-4e55-9ae3-7b42682a47e3",
         "path": "/ui/AppleLeaderboard/Panel/List",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.ScrollLayoutGroupComponent",
         "jsonString": {
@@ -2012,14 +2012,14 @@
         }
       },
       {
-        "id": "a8b8981c-e082-46a1-b416-b93df36c07c4",
+        "id": "9dfa252c-f40d-4ac0-ac8b-438c9d46d599",
         "path": "/ui/AppleLeaderboard/Panel/List/RowTemplate",
         "componentNames": "MOD.Core.UITransformComponent",
         "jsonString": {
           "name": "RowTemplate",
           "path": "/ui/AppleLeaderboard/Panel/List/RowTemplate",
           "nameEditable": true,
-          "enable": true,
+          "enable": false,
           "visible": true,
           "localize": true,
           "displayOrder": 0,
@@ -2097,7 +2097,7 @@
         }
       },
       {
-        "id": "b75df32c-9227-4f13-a5d1-67c633b9e9cd",
+        "id": "cbf0a6f8-e911-4baa-b4c7-586f84d97e91",
         "path": "/ui/AppleLeaderboard/Panel/List/RowTemplate/Rank",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -2300,7 +2300,7 @@
         }
       },
       {
-        "id": "42a22dab-1347-47fe-b289-09714d00d584",
+        "id": "0b037574-acca-4970-96ca-f5f4bc61023a",
         "path": "/ui/AppleLeaderboard/Panel/List/RowTemplate/Name",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -2503,7 +2503,7 @@
         }
       },
       {
-        "id": "ff1f4558-6b9e-43c6-ae1f-c9eeb67f366a",
+        "id": "a9a1a6ab-0301-4f22-9836-f0918596bdad",
         "path": "/ui/AppleLeaderboard/Panel/List/RowTemplate/Score",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -2706,7 +2706,7 @@
         }
       },
       {
-        "id": "18403f5a-6179-4948-b025-a981ca584716",
+        "id": "09db5e69-d125-4dfd-82c0-a3c90b9a21f3",
         "path": "/ui/AppleLeaderboard/Panel/MyRank",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -2909,7 +2909,7 @@
         }
       },
       {
-        "id": "355160c8-7258-4c8f-ae46-eef194912a26",
+        "id": "750230e1-0d4a-4334-98a6-804c29a9c5c0",
         "path": "/ui/AppleLeaderboard/Panel/Stale",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -3112,7 +3112,7 @@
         }
       },
       {
-        "id": "5226f3ed-69c4-46c1-a012-25c3fba90b17",
+        "id": "0d526fda-0c0d-42b9-886c-c47e971f3da6",
         "path": "/ui/AppleLeaderboard/Panel/BtnClose",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.ButtonComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -3365,7 +3365,7 @@
         }
       },
       {
-        "id": "f0cab94c-13d3-42e4-b141-aed3bc4537a6",
+        "id": "c3529c27-be33-4b54-bc78-8a5b38a67af5",
         "path": "/ui/AppleLeaderboard/Panel/SinglePB",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
@@ -3568,7 +3568,7 @@
         }
       },
       {
-        "id": "22a24f74-8db9-4fdb-be37-f5fed4cb84a6",
+        "id": "95b9306e-84e6-4320-a3b4-fd5c71929904",
         "path": "/ui/AppleLeaderboard/Panel/MultiLocked",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
