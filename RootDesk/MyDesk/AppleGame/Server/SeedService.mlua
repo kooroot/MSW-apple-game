@@ -43,9 +43,14 @@ script SeedService extends Logic
         self.entropyCounter += 1
         local now = DateTime.UtcNow
         local ms = (now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond) & 0xFFFFFFFF
-        local uid = tonumber(userId)
-        if uid == nil then uid = #userId end
-        uid = uid & 0xFFFFFFFF
+        -- Fold the caller id into a 32-bit term via a byte hash. Deliberately NOT tonumber(userId):
+        -- an MSW userId can exceed the int64 range, and tonumber would then return a float, making the
+        -- subsequent `& 0xFFFFFFFF` throw "number has no integer representation" and crash the live
+        -- issuance path. A byte hash is total over any string id and never yields a float.
+        local uid = 0
+        for i = 1, #userId do
+            uid = (uid * 31 + string.byte(userId, i)) & 0xFFFFFFFF
+        end
         local h = self:Secret()
         h = _SeededRng:Next((h ~ ms) & 0xFFFFFFFF)
         h = _SeededRng:Next((h + self.entropyCounter * 2654435761) & 0xFFFFFFFF)
