@@ -1,0 +1,95 @@
+@Logic
+script SeedService extends Logic
+    property integer entropyCounter = 0
+
+    @ExecSpace("ServerOnly")
+    method void EnsureSessions()
+        -- Lazily initializes the in-memory token->record map (temporary, non-synced server state).
+        if self._T.sessions == nil then
+            self._T.sessions = {}
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer KstDateKey()
+        -- Derives the KST calendar date as YYYYMMDD from the server UTC clock plus 9 hours.
+        local kst = DateTime.UtcNow + TimeSpan(9, 0, 0)
+        return kst.Year * 10000 + kst.Month * 100 + kst.Day
+    end
+
+    @ExecSpace("ServerOnly")
+    method string NewToken(string userId)
+        -- Builds an opaque single-use token from server entropy the client cannot predict.
+        self.entropyCounter += 1
+        local now = DateTime.UtcNow
+        local ms = now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond
+        local mixed = _SeededRng:Mix32((ms + self.entropyCounter * 2654435761) & 0xFFFFFFFF)
+        mixed = _SeededRng:Next((mixed + self.entropyCounter) & 0xFFFFFFFF)
+        return "tk_" .. tostring(mixed) .. "_" .. tostring(self.entropyCounter)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer NewSingleSeed()
+        -- Produces a server-random single-mode seed the client cannot predict.
+        self.entropyCounter += 1
+        local now = DateTime.UtcNow
+        local ms = now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond
+        return _SeededRng:Mix32((ms * 31 + self.entropyCounter) & 0xFFFFFFFF)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table IssueFor(string userId, string mode)
+        -- Core issuance: validates mode, consumes ranked attempt at issuance, stores a session, returns the reply payload.
+        self:EnsureSessions()
+        local dateKey = self:KstDateKey()
+        local personalBest = _RankAttemptStore:GetPersonalBest(userId)
+
+        if mode == "ranked" then
+            local consumed = _RankAttemptStore:TryConsumeDaily(userId, dateKey)
+            if not consumed then
+                log("[SEED] ranked blocked (already played) userId=" .. userId .. " dateKey=" .. tostring(dateKey))
+                return { token = "", seed = 0, dateKey = dateKey, alreadyPlayed = true, personalBest = personalBest, mode = mode }
+            end
+            local seed = _SeededRng:Mix32(dateKey)
+            local token = self:NewToken(userId)
+            self._T.sessions[token] = { userId = userId, seed = seed, dateKey = dateKey, mode = "ranked", issuedAt = DateTime.UtcNow, consumed = false }
+            log("[SEED] ranked issued userId=" .. userId .. " dateKey=" .. tostring(dateKey) .. " seed=" .. tostring(seed))
+            return { token = token, seed = seed, dateKey = dateKey, alreadyPlayed = false, personalBest = personalBest, mode = mode }
+        end
+
+        -- "single" (and any non-"ranked" mode is treated as single).
+        local seed = self:NewSingleSeed()
+        local token = self:NewToken(userId)
+        self._T.sessions[token] = { userId = userId, seed = seed, dateKey = dateKey, mode = "single", issuedAt = DateTime.UtcNow, consumed = false }
+        log("[SEED] single issued userId=" .. userId .. " seed=" .. tostring(seed))
+        return { token = token, seed = seed, dateKey = dateKey, alreadyPlayed = false, personalBest = personalBest, mode = "single" }
+    end
+
+    @ExecSpace("ServerOnly")
+    method table GetSession(string token)
+        -- Returns the in-memory session record for a token, or nil if unknown/expired.
+        self:EnsureSessions()
+        return self._T.sessions[token]
+    end
+
+    @ExecSpace("ServerOnly")
+    method void MarkConsumed(string token)
+        -- Marks a session token as used so the same token cannot be submitted twice (called by ScoreService).
+        self:EnsureSessions()
+        local rec = self._T.sessions[token]
+        if rec ~= nil then rec.consumed = true end
+    end
+
+    @ExecSpace("Server")
+    method void RequestSeed(string mode)
+        -- Client entry point: issues a seed+token for the authenticated caller and replies on their client.
+        local payload = self:IssueFor(senderUserId, mode)
+        self:ReceiveSeed(payload.mode, payload.seed, payload.token, payload.dateKey, payload.alreadyPlayed, payload.personalBest, senderUserId)
+    end
+
+    @ExecSpace("Client")
+    method void ReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
+        -- Server->caller reply; the client GameSession (Plan 4) builds the board from seed unless alreadyPlayed.
+        log("[SEED] client received mode=" .. mode .. " alreadyPlayed=" .. tostring(alreadyPlayed) .. " seed=" .. tostring(seed))
+    end
+end

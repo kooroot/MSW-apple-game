@@ -89,4 +89,47 @@ script ServerAuthTest extends Logic
         local readBack = _RankAttemptStore:GetPersonalBest(uid)
         self:Expect("pb_read_back_max", readBack == base + 50)
     end
+
+    @ExecSpace("ServerOnly")
+    method void TestSeedDateKey()
+        -- Verifies the KST dateKey is a plausible YYYYMMDD integer (midnight-rollover sanity, GATE A gap).
+        local dk = _SeedService:KstDateKey()
+        log("[INFO] KstDateKey=" .. tostring(dk))   -- reviewer compares against "today in KST"
+        self:Expect("datekey_in_range", dk >= 20240101 and dk <= 99991231)
+        local mm = (dk // 100) % 100
+        local dd = dk % 100
+        self:Expect("datekey_month_valid", mm >= 1 and mm <= 12)
+        self:Expect("datekey_day_valid", dd >= 1 and dd <= 31)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TestSeedIssuance()
+        -- Verifies single-mode always issues; ranked seed == Mix32(dateKey); ranked consumes at issuance.
+        local uid = self:LocalUserId()
+
+        -- Single mode: always issues a token, never blocked, no attempt consumed.
+        local s1 = _SeedService:IssueFor(uid, "single")
+        self:Expect("single_issues_token", s1.token ~= nil and s1.token ~= "" and s1.alreadyPlayed == false)
+        local s2 = _SeedService:IssueFor(uid, "single")
+        self:Expect("single_token_unique", s2.token ~= s1.token)
+        self:Expect("single_seed_unpredictable", s2.seed ~= s1.seed)  -- server entropy varies per issue
+        local sess = _SeedService:GetSession(s1.token)
+        self:Expect("single_session_stored", sess ~= nil and sess.userId == uid and sess.consumed == false)
+
+        -- Ranked mode: seed must equal Mix32(dateKey); attempt is consumed at issuance.
+        local dk = _SeedService:KstDateKey()
+        local r1 = _SeedService:IssueFor(uid, "ranked")
+        -- r1 may be alreadyPlayed=true if a prior run consumed today's attempt; assert the seed contract only when issued.
+        if r1.alreadyPlayed == false then
+            self:Expect("ranked_seed_is_mix32", r1.seed == _SeededRng:Mix32(dk))
+            self:Expect("ranked_token_issued", r1.token ~= nil and r1.token ~= "")
+            -- Second ranked issue same day must be blocked (consumed at issuance).
+            local r2 = _SeedService:IssueFor(uid, "ranked")
+            self:Expect("ranked_second_blocked", r2.alreadyPlayed == true and (r2.token == nil or r2.token == ""))
+        else
+            -- Already consumed earlier today: the block path itself is the assertion.
+            self:Expect("ranked_already_blocked", r1.alreadyPlayed == true and (r1.token == nil or r1.token == ""))
+            log("[INFO] ranked already consumed for dateKey=" .. tostring(dk) .. " (expected on reruns)")
+        end
+    end
 end
