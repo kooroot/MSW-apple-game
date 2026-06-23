@@ -71,9 +71,14 @@ script BoardController extends Logic
         local sp = spRow[col]
         if not isvalid(sp) then return end
         sp.Enable = value > 0
-        -- First-pass render uses the number text on a tinted cell. Icon RUIDs are a focused
-        -- follow-up: SpriteGUIRendererComponent has no SpriteRUID; its image is ImageRUID, a
-        -- runtime userdata DataRef (NOT a plain Lua table), assigned once the wrapper is confirmed.
+        if value > 0 and _AssetCatalog ~= nil then
+            -- Apply the apple sprite for this value. ImageRUID is a DataRef (see .d.mlua); at RUNTIME
+            -- it must be assigned a DataRef(ruid) object -- a plain { DataId = ruid } Lua table (the
+            -- builder/JSON serialization form) is silently rejected and the cell keeps its placeholder.
+            -- RUID 263b7db3... is a `sprite`, so no thumbnail:// prefix. IconRUID(value) maps every
+            -- 1..9 to the shared apple sprite -- the number text below distinguishes them.
+            sp.ImageRUID = DataRef(_AssetCatalog:IconRUID(value))
+        end
         local txRow = self.cellText[row]
         if txRow ~= nil then
             local tx = txRow[col]

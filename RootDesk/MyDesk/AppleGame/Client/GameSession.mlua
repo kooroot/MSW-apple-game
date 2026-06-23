@@ -16,9 +16,10 @@ script GameSession extends Component
     property number startElapsed = 0
 
     method void OnBeginPlay()
-        -- Initializes session state. Play does not begin here; it starts on map enter (auto-start) or
-        -- when a future title screen calls StartSession. This is a ClientOnly @Component on the map
-        -- entity (NOT a @Logic) so OnMapEnter/OnUpdate fire and the state resets on map unload.
+        -- Initializes session state. Play does not begin here; it starts when the player picks a mode
+        -- on the title screen (TitleController -> StartSession), shown on map enter. This is a
+        -- ClientOnly @Component on the map entity (NOT a @Logic) so OnMapEnter/OnUpdate fire and the
+        -- state resets on map unload.
         self.active = false
         self.started = false
         self.moves = {}
@@ -33,18 +34,17 @@ script GameSession extends Component
     end
 
     method void OnMapEnter(Entity m)
-        -- The local player entered the host map. Phase 1 has no title/mode-select UI, so single mode
-        -- begins automatically here -- exactly once, guarded by `started` (OnMapEnter can fire repeatedly,
-        -- e.g. when other players join the same map on this client).
+        -- The local player entered the host map. Show the title / mode-select screen (singles vs ranked)
+        -- exactly once, guarded by `started` (OnMapEnter can fire repeatedly, e.g. when other players
+        -- join the same map on this client). The chosen mode then drives StartSession via TitleController.
         -- @ExecSpace("ClientOnly") does NOT suppress server-side lifecycle dispatch for a map @Component:
-        -- OnMapEnter still fires on the server, where StartSession->RequestSeed runs with a nil
-        -- senderUserId and crashes IssueFor (LEA-3007 ArgumentNilOrEmpty 'userId'). The whole play
-        -- session is client-side (seed RPC, board, input), so only auto-start on the client.
+        -- OnMapEnter still fires on the server, where the title UI and TitleController are nil. The whole
+        -- play session is client-side (seed RPC, board, input), so only handle this on the client.
         if not self:IsClient() then return end
         if self.started then return end
         self.started = true
-        log("[GameSession] map enter -> auto-start single")
-        self:StartSession("single")
+        log("[GameSession] map enter -> show title")
+        if _TitleController ~= nil then _TitleController:Show() end
     end
 
     method void StartSession(string mode)

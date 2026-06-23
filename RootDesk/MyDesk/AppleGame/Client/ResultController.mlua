@@ -11,10 +11,12 @@ script ResultController extends Logic
     property TextComponent reasonLine = "abcde222-2ae1-4588-a4fb-77e64ff495d6"
     property ButtonComponent btnRetry = "3ec2cadc-b3e8-4627-8236-50b04e0fa0bb"
     property ButtonComponent btnRank = "eb943b0b-511f-46ff-80ab-8a4094c6b852"
+    property ButtonComponent btnTitle = "308fae99-5414-42f8-8899-d24854c8f705"
 
     -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
     property any retryHandler = nil
     property any rankHandler = nil
+    property any titleHandler = nil
 
     method void OnBeginPlay()
         -- Hides the popup at start and wires the retry/leaderboard buttons. A @Logic OnBeginPlay runs
@@ -26,6 +28,9 @@ script ResultController extends Logic
         end
         if isvalid(self.btnRank) then
             self.rankHandler = self.btnRank.Entity:ConnectEvent(ButtonClickEvent, self.OnRank)
+        end
+        if isvalid(self.btnTitle) then
+            self.titleHandler = self.btnTitle.Entity:ConnectEvent(ButtonClickEvent, self.OnTitle)
         end
         log("[ResultController] ready")
     end
@@ -97,6 +102,14 @@ script ResultController extends Logic
         if _LeaderboardController ~= nil then _LeaderboardController:Open(1) end
     end
 
+    method void OnTitle()
+        -- Closes the popup and reopens the title / mode-select screen so the player can switch modes
+        -- (single <-> ranked) without re-entering the map. _TitleController is a @Logic global -> guard.
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
+        self:Hide()
+        if _TitleController ~= nil then _TitleController:Show() end
+    end
+
     method void OnEndPlay()
         -- Disconnects button handlers (mirror of OnBeginPlay).
         if self.retryHandler ~= nil and isvalid(self.btnRetry) then
@@ -105,8 +118,12 @@ script ResultController extends Logic
         if self.rankHandler ~= nil and isvalid(self.btnRank) then
             self.btnRank.Entity:DisconnectEvent(ButtonClickEvent, self.rankHandler)
         end
+        if self.titleHandler ~= nil and isvalid(self.btnTitle) then
+            self.btnTitle.Entity:DisconnectEvent(ButtonClickEvent, self.titleHandler)
+        end
         self.retryHandler = nil
         self.rankHandler = nil
+        self.titleHandler = nil
     end
 
 end

@@ -1,0 +1,86 @@
+@Logic
+@ExecSpace("ClientOnly")
+script TitleController extends Logic
+
+    -- UI entity / component refs. Injected by the UIBuilder bind step (placeholder UUIDs until then).
+    property Entity panel = "6e4b4d08-32f1-492f-97b9-0927813f6a37"
+    property Entity dimmer = "2a552ba0-bb35-427f-92d3-ff91db509d1c"
+    property ButtonComponent btnSingle = "bac777d1-8c5c-46a2-a230-3b858c93ae72"
+    property ButtonComponent btnRanked = "162d8a5a-68a3-43d3-8b12-3a9cf378a991"
+
+    -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
+    property any singleHandler = nil
+    property any rankedHandler = nil
+
+    method void OnBeginPlay()
+        -- Shows the title at start (it is the entry screen) and wires the two mode buttons. A @Logic
+        -- OnBeginPlay runs on BOTH server and client; on the server every UI ref is nil, so each deref
+        -- is isvalid-guarded (same timing hazard as Hud/Board/Result controllers).
+        -- Show() here (not Hide()): on the client, GameSession.OnMapEnter fires BEFORE this @Logic's
+        -- OnBeginPlay, so a Hide() here would clobber OnMapEnter's Show() and leave the title invisible.
+        -- StartMode() (mode pick) and ResultController return then drive Hide/Show during play.
+        self:Show()
+        if isvalid(self.btnSingle) then
+            self.singleHandler = self.btnSingle.Entity:ConnectEvent(ButtonClickEvent, self.OnSingle)
+        end
+        if isvalid(self.btnRanked) then
+            self.rankedHandler = self.btnRanked.Entity:ConnectEvent(ButtonClickEvent, self.OnRanked)
+        end
+        log("[TitleController] ready")
+    end
+
+    method void Show()
+        -- Shows the title / mode-select screen. Guarded so a server-side call is a safe no-op.
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        log("[TitleController] show")
+    end
+
+    method void Hide()
+        -- Hides the title / mode-select screen. Called from StartMode() once a mode is picked
+        -- (OnBeginPlay shows the title, it never hides it). isvalid-guarded so an off-client call
+        -- -- where the UI refs are nil -- is a safe no-op.
+        if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.dimmer) then self.dimmer.Enable = false end
+    end
+
+    method void StartMode(string mode)
+        -- Closes the title and starts a session in the chosen mode ("single" | "ranked"). GameSession
+        -- is a map @Component; resolve it off the local player's current map (map-name independent) so
+        -- an early/off-map click is a safe no-op. _AssetCatalog is a @Logic global -> guard with ~= nil.
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
+        self:Hide()
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local mapEnt = player.CurrentMap
+        if not isvalid(mapEnt) then return end
+        local session = mapEnt:GetComponent("script.GameSession")
+        if not isvalid(session) then return end
+        -- GameSession (map @Component) is resolved at runtime by component-type string; StartSession
+        -- is read off the live instance. The LSP cannot see the forward type -> INFO-only, no @type cast.
+        session:StartSession(mode)
+    end
+
+    method void OnSingle()
+        -- Single mode button: unlimited practice runs.
+        self:StartMode("single")
+    end
+
+    method void OnRanked()
+        -- Ranked mode button: today's daily seed, one play per day.
+        self:StartMode("ranked")
+    end
+
+    method void OnEndPlay()
+        -- Disconnects button handlers (mirror of OnBeginPlay).
+        if self.singleHandler ~= nil and isvalid(self.btnSingle) then
+            self.btnSingle.Entity:DisconnectEvent(ButtonClickEvent, self.singleHandler)
+        end
+        if self.rankedHandler ~= nil and isvalid(self.btnRanked) then
+            self.btnRanked.Entity:DisconnectEvent(ButtonClickEvent, self.rankedHandler)
+        end
+        self.singleHandler = nil
+        self.rankedHandler = nil
+    end
+
+end
