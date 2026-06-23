@@ -1,0 +1,123 @@
+@Logic
+@ExecSpace("ClientOnly")
+script BoardController extends Logic
+
+    property integer COLS = 17
+    property integer ROWS = 10
+    property number CellW = 92
+    property number CellH = 92
+
+    property Entity gridPanel = "4916c9d3-a82e-44e6-b3db-827900e3b5bc"
+    property Entity selOverlay = "c9905e13-ff87-4030-9e46-ca28b5869dd7"
+    property TextComponent selSum = "62986cd4-72d3-42b1-b90c-ddbcd76cc490"
+
+    -- Lazily-built [row][col] caches of cell render handles. Declared as `any` (table-valued,
+    -- never @Sync'd) because mlua has no untyped instance fields; assigning an undeclared
+    -- self.x silently fails. Project precedent: RankingAdvanced uses `property any`.
+    property any cellSprite = nil
+    property any cellText = nil
+    property boolean cached = false
+
+    method void OnBeginPlay()
+        -- Resets the cell caches and hides the selection overlay. A @Logic OnBeginPlay runs on
+        -- BOTH server and client; on the server every UI ref is nil, so the overlay is touched
+        -- only behind an isvalid guard (see HudController for the same timing hazard).
+        self.cellSprite = {}
+        self.cellText = {}
+        self.cached = false
+        if isvalid(self.selOverlay) then self.selOverlay.Enable = false end
+        log("[BoardController] ready")
+    end
+
+    method void CacheCells()
+        -- Resolves all 170 cell entities by name once and stores their renderer/text components.
+        -- No-ops until the grid UI exists (gridPanel is nil on the server and before UI load).
+        if self.cached then return end
+        if not isvalid(self.gridPanel) then return end
+        for r = 0, self.ROWS - 1 do
+            self.cellSprite[r] = {}
+            self.cellText[r] = {}
+            for c = 0, self.COLS - 1 do
+                local cell = self.gridPanel:GetChildByName("Cell_" .. r .. "_" .. c, false)
+                if isvalid(cell) then
+                    self.cellSprite[r][c] = cell.SpriteGUIRendererComponent
+                    local num = cell:GetChildByName("Num", false)
+                    if isvalid(num) then self.cellText[r][c] = num.TextComponent end
+                end
+            end
+        end
+        self.cached = true
+    end
+
+    method void SetCellValue(integer row, integer col, integer value)
+        -- Repaints one cell: value 1..9 shows the number, value 0 hides the cell. Self-caches so
+        -- it is safe to call directly (e.g. after a clear) before any RenderBoard.
+        self:CacheCells()
+        local spRow = self.cellSprite[row]
+        if spRow == nil then return end
+        local sp = spRow[col]
+        if not isvalid(sp) then return end
+        sp.Enable = value > 0
+        -- First-pass render uses the number text on a tinted cell. Icon RUIDs are a focused
+        -- follow-up: SpriteGUIRendererComponent has no SpriteRUID; its image is ImageRUID, a
+        -- runtime userdata DataRef (NOT a plain Lua table), assigned once the wrapper is confirmed.
+        local txRow = self.cellText[row]
+        if txRow ~= nil then
+            local tx = txRow[col]
+            if isvalid(tx) then
+                if value > 0 then tx.Text = tostring(value) else tx.Text = "" end
+            end
+        end
+    end
+
+    method void RenderBoard(table grid)
+        -- Paints all 170 cells from a 0-indexed grid[row][col]; caches handles on first call.
+        self:CacheCells()
+        if not self.cached then return end
+        for r = 0, self.ROWS - 1 do
+            for c = 0, self.COLS - 1 do
+                local v = 0
+                if grid[r] ~= nil and grid[r][c] ~= nil then v = grid[r][c] end
+                self:SetCellValue(r, c, v)
+            end
+        end
+        log("[BoardController] board rendered")
+    end
+
+    method UITransformComponent GridTransform()
+        -- Returns the grid panel UITransform so the input layer can map screen -> cell.
+        if not isvalid(self.gridPanel) then return nil end
+        return self.gridPanel.UITransformComponent
+    end
+
+    method void ShowSelection(integer cLo, integer rLo, integer cHi, integer rHi, integer sum)
+        -- Positions/sizes the translucent overlay over the inclusive cell rect and shows the running sum.
+        if not isvalid(self.selOverlay) then return end
+        local cols = cHi - cLo + 1
+        local rows = rHi - rLo + 1
+        local w = cols * self.CellW
+        local h = rows * self.CellH
+        local gw = self.COLS * self.CellW
+        local gh = self.ROWS * self.CellH
+        local centerCol = (cLo + cHi) / 2
+        local centerRow = (rLo + rHi) / 2
+        local x = -gw / 2 + self.CellW / 2 + centerCol * self.CellW
+        local y = gh / 2 - self.CellH / 2 - centerRow * self.CellH
+        local ot = self.selOverlay.UITransformComponent
+        ot.RectSize = Vector2(w, h)
+        ot.anchoredPosition = Vector2(x, y)
+        self.selOverlay.Enable = true
+        if isvalid(self.selSum) then
+            self.selSum.Text = tostring(sum)
+            self.selSum.Entity.UITransformComponent.anchoredPosition = Vector2(x, y)
+            self.selSum.Entity.Enable = true
+        end
+    end
+
+    method void HideSelection()
+        -- Hides the selection overlay and its running-sum label.
+        if isvalid(self.selOverlay) then self.selOverlay.Enable = false end
+        if isvalid(self.selSum) then self.selSum.Entity.Enable = false end
+    end
+
+end
