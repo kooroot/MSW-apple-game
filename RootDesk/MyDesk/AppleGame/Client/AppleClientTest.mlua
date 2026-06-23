@@ -1,0 +1,43 @@
+@Logic
+@ExecSpace("ClientOnly")
+script AppleClientTest extends Logic
+
+    property integer passed = 0
+    property integer failed = 0
+
+    method void Expect(string name, boolean cond)
+        -- Records one assertion to the log for maker_logs inspection.
+        if cond then
+            self.passed += 1
+            log("[TEST PASS] " .. name)
+        else
+            self.failed += 1
+            log_error("[TEST FAIL] " .. name)
+        end
+    end
+
+    method void Reset()
+        -- Clears counters before a run.
+        self.passed = 0
+        self.failed = 0
+    end
+
+    method void Summary()
+        -- Emits the final tally line.
+        log("[TEST SUMMARY] passed=" .. self.passed .. " failed=" .. self.failed)
+    end
+
+    method void TestLocalToCell()
+        -- Verifies local-pixel -> (col,row) mapping, clamping, and top-left origin.
+        local a = _BoardController:LocalToCell(0, 0)        -- top-left corner
+        self:Expect("origin_is_0_0", a.col == 0 and a.row == 0)
+        local b = _BoardController:LocalToCell(92 * 16 + 5, 92 * 9 + 5) -- last cell
+        self:Expect("last_cell_16_9", b.col == 16 and b.row == 9)
+        local mid = _BoardController:LocalToCell(92 * 2 + 10, 92 * 3 + 10)
+        self:Expect("mid_cell_2_3", mid.col == 2 and mid.row == 3)
+        local clampHi = _BoardController:LocalToCell(99999, 99999)
+        self:Expect("clamp_high", clampHi.col == 16 and clampHi.row == 9)
+        local clampLo = _BoardController:LocalToCell(-50, -50)
+        self:Expect("clamp_low", clampLo.col == 0 and clampLo.row == 0)
+    end
+end

@@ -18,6 +18,18 @@ script BoardController extends Logic
     property any cellText = nil
     property boolean cached = false
 
+    -- Drag-input state, populated by BindInput at runtime. `any` because these hold a live grid,
+    -- a {col,row} table, a callback, and EventHandlerBase values that are not @Sync'd
+    -- (EventHandlerBase must be `any`, msw-scripting §5). touchPanel is `any` so its default is nil.
+    property any liveGrid = nil
+    property any onValidClear = nil
+    property any touchPanel = nil
+    property boolean dragging = false
+    property any downCell = nil
+    property any downHandler = nil
+    property any dragHandler = nil
+    property any upHandler = nil
+
     method void OnBeginPlay()
         -- Resets the cell caches and hides the selection overlay. A @Logic OnBeginPlay runs on
         -- BOTH server and client; on the server every UI ref is nil, so the overlay is touched
@@ -118,6 +130,124 @@ script BoardController extends Logic
         -- Hides the selection overlay and its running-sum label.
         if isvalid(self.selOverlay) then self.selOverlay.Enable = false end
         if isvalid(self.selSum) then self.selSum.Entity.Enable = false end
+    end
+
+    method table LocalToCell(number localXFromLeft, number yFromTop)
+        -- Pure mapping: top-left-origin local pixels -> clamped {col,row}, row 0 = topmost.
+        local col = math.floor(localXFromLeft / self.CellW)
+        local row = math.floor(yFromTop / self.CellH)
+        if col < 0 then col = 0 end
+        if col > self.COLS - 1 then col = self.COLS - 1 end
+        if row < 0 then row = 0 end
+        if row > self.ROWS - 1 then row = self.ROWS - 1 end
+        return { col = col, row = row }
+    end
+
+    method table ScreenToCell(Vector2 touchPoint)
+        -- Converts a screen-space touch point to a clamped board {col,row} via the grid transform.
+        -- ScreenToLocalUIPosition returns coords relative to the grid pivot (center); shift to a
+        -- top-left origin and flip y (UI y is up) so row 0 = topmost.
+        local gt = self:GridTransform()
+        if not isvalid(gt) then return { col = 0, row = 0 } end
+        local lp = _UILogic:ScreenToLocalUIPosition(touchPoint, gt)
+        local gw = self.COLS * self.CellW
+        local gh = self.ROWS * self.CellH
+        local localXFromLeft = lp.x + gw / 2
+        local yFromTop = gh / 2 - lp.y
+        return self:LocalToCell(localXFromLeft, yFromTop)
+    end
+
+    method integer SumRect(integer cLo, integer rLo, integer cHi, integer rHi)
+        -- Sums remaining (>0) cell values in the inclusive rect from the live board snapshot.
+        local s = 0
+        if self.liveGrid == nil then return 0 end
+        for r = rLo, rHi do
+            for c = cLo, cHi do
+                local v = self.liveGrid[r][c]
+                if v ~= nil and v > 0 then s += v end
+            end
+        end
+        return s
+    end
+
+    method void BindInput(Entity touchPanel, table grid, any onValidClear)
+        -- Connects down/drag/up on the touch panel; drives the overlay and commits valid clears.
+        -- Re-bind safe: releases any previous handlers first.
+        self:UnbindInput()
+        self.liveGrid = grid
+        self.onValidClear = onValidClear
+        self.touchPanel = touchPanel
+        self.dragging = false
+        self.downCell = nil
+        if not isvalid(touchPanel) then return end
+        self.downHandler = touchPanel:ConnectEvent(UITouchDownEvent, self.OnTouchDown)
+        self.dragHandler = touchPanel:ConnectEvent(UITouchDragEvent, self.OnTouchDrag)
+        self.upHandler = touchPanel:ConnectEvent(UITouchUpEvent, self.OnTouchUp)
+    end
+
+    method void OnTouchDown(UITouchDownEvent ev)
+        -- Drag anchor: records the down cell and shows a 1x1 selection with its sum.
+        if ev.TouchId ~= 1 and ev.TouchId ~= -1 then return end
+        self.dragging = true
+        self.downCell = self:ScreenToCell(ev.TouchPoint)
+        local d = self.downCell
+        self:ShowSelection(d.col, d.row, d.col, d.row, self:SumRect(d.col, d.row, d.col, d.row))
+    end
+
+    method void OnTouchDrag(UITouchDragEvent ev)
+        -- Expands the selection rect from the anchor to the current cell and updates the live sum.
+        if not self.dragging or self.downCell == nil then return end
+        if ev.TouchId ~= 1 and ev.TouchId ~= -1 then return end
+        local cur = self:ScreenToCell(ev.TouchPoint)
+        local cLo = math.min(self.downCell.col, cur.col)
+        local cHi = math.max(self.downCell.col, cur.col)
+        local rLo = math.min(self.downCell.row, cur.row)
+        local rHi = math.max(self.downCell.row, cur.row)
+        self:ShowSelection(cLo, rLo, cHi, rHi, self:SumRect(cLo, rLo, cHi, rHi))
+    end
+
+    method void OnTouchUp(UITouchUpEvent ev)
+        -- Commit: validates the rect via ApplyMove; sum==10 clears cells + SFX + fires onValidClear.
+        if not self.dragging or self.downCell == nil then return end
+        self.dragging = false
+        local cur = self:ScreenToCell(ev.TouchPoint)
+        local cLo = math.min(self.downCell.col, cur.col)
+        local cHi = math.max(self.downCell.col, cur.col)
+        local rLo = math.min(self.downCell.row, cur.row)
+        local rHi = math.max(self.downCell.row, cur.row)
+        self:HideSelection()
+        local rect = { c1 = cLo, r1 = rLo, c2 = cHi, r2 = rHi }
+        local res = _PuzzleCore:ApplyMove(self.liveGrid, rect)
+        if res.valid then
+            for r = rLo, rHi do
+                for c = cLo, cHi do
+                    self:SetCellValue(r, c, 0)
+                end
+            end
+            _SoundService:PlaySound(_AssetCatalog:SfxClear(), 1.0)
+            if self.onValidClear ~= nil then self.onValidClear(rect, res.clearedCount) end
+            log("[BoardController] valid clear count=" .. res.clearedCount)
+        else
+            _SoundService:PlaySound(_AssetCatalog:SfxFail(), 1.0)
+            log("[BoardController] invalid release")
+        end
+        self.downCell = nil
+    end
+
+    method void UnbindInput()
+        -- Disconnects all touch handlers (called by the session at run end / map leave).
+        if not isvalid(self.touchPanel) then
+            self.downHandler = nil
+            self.dragHandler = nil
+            self.upHandler = nil
+            return
+        end
+        if self.downHandler then self.touchPanel:DisconnectEvent(UITouchDownEvent, self.downHandler) end
+        if self.dragHandler then self.touchPanel:DisconnectEvent(UITouchDragEvent, self.dragHandler) end
+        if self.upHandler then self.touchPanel:DisconnectEvent(UITouchUpEvent, self.upHandler) end
+        self.downHandler = nil
+        self.dragHandler = nil
+        self.upHandler = nil
     end
 
 end
