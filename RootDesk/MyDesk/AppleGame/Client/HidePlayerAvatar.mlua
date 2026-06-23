@@ -1,0 +1,24 @@
+@Component
+@ExecSpace("ClientOnly")
+script HidePlayerAvatar extends Component
+
+    method void OnBeginPlay()
+        -- Hides the local player's avatar renderer so the UI puzzle has no visible character; the entity
+        -- stays alive so ranking/identity components still work. @ExecSpace("ClientOnly") does NOT stop a
+        -- map @Component's OnBeginPlay from also firing on the server (where LocalPlayer is nil), so guard
+        -- on IsClient() first -- avatar hiding is purely client-visual. The isvalid guard below still
+        -- covers the brief client-side pre-spawn window.
+        if not self:IsClient() then return end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then
+            log_warning("[HidePlayerAvatar] no LocalPlayer at BeginPlay")
+            return
+        end
+        local avatar = player.AvatarRendererComponent
+        if isvalid(avatar) then avatar.Enable = false end
+        local sprite = player.SpriteRendererComponent
+        if isvalid(sprite) then sprite.Enable = false end
+        log("[HidePlayerAvatar] avatar hidden for " .. tostring(player.Name))
+    end
+
+end
