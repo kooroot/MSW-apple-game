@@ -18,23 +18,54 @@ script SeedService extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method string NewToken(string userId)
-        -- Builds an opaque single-use token from server entropy the client cannot predict.
-        self.entropyCounter += 1
-        local now = DateTime.UtcNow
-        local ms = now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond
-        local mixed = _SeededRng:Mix32((ms + self.entropyCounter * 2654435761) & 0xFFFFFFFF)
-        mixed = _SeededRng:Next((mixed + self.entropyCounter) & 0xFFFFFFFF)
-        return "tk_" .. tostring(mixed) .. "_" .. tostring(self.entropyCounter)
+    method integer Secret()
+        -- Per-server-instance secret, established once at boot from boot-time clock entropy stirred
+        -- through several xorshift rounds, then cached in _T and NEVER sent to clients. Folded into
+        -- every token/seed so the output is not invertible from the request-time wall clock alone.
+        if self._T.secret == nil then
+            local now = DateTime.UtcNow
+            local boot = (now.Year * 131071 + now.Month * 8191 + now.Day * 127
+                + now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond) & 0xFFFFFFFF
+            local s = _SeededRng:Normalize(boot ~ 0x9E3779B9)
+            for i = 1, 8 do
+                s = _SeededRng:Next(s)
+            end
+            self._T.secret = s
+        end
+        return self._T.secret
     end
 
     @ExecSpace("ServerOnly")
-    method integer NewSingleSeed()
-        -- Produces a server-random single-mode seed the client cannot predict.
+    method integer MixEntropy(string userId, integer salt)
+        -- Folds the per-instance secret, the caller id, a monotonic counter, and a per-call salt through
+        -- several hash rounds into an unpredictable 32-bit value. The counter is mixed INTO the hash body
+        -- (never exposed in cleartext), so outputs stay unique without leaking server state to clients.
         self.entropyCounter += 1
         local now = DateTime.UtcNow
-        local ms = now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond
-        return _SeededRng:Mix32((ms * 31 + self.entropyCounter) & 0xFFFFFFFF)
+        local ms = (now.Hour * 3600000 + now.Minute * 60000 + now.Second * 1000 + now.Millisecond) & 0xFFFFFFFF
+        local uid = tonumber(userId)
+        if uid == nil then uid = #userId end
+        uid = uid & 0xFFFFFFFF
+        local h = self:Secret()
+        h = _SeededRng:Next((h ~ ms) & 0xFFFFFFFF)
+        h = _SeededRng:Next((h + self.entropyCounter * 2654435761) & 0xFFFFFFFF)
+        h = _SeededRng:Next((h ~ uid) & 0xFFFFFFFF)
+        return _SeededRng:Mix32((h ~ salt) & 0xFFFFFFFF)
+    end
+
+    @ExecSpace("ServerOnly")
+    method string NewToken(string userId)
+        -- Builds an opaque single-use token bound to the caller and unpredictable from the wall clock
+        -- (two secret-folded hash words; no cleartext counter suffix). 64-bit body -> collision-free in practice.
+        local body = self:MixEntropy(userId, 0x5A5A5A5A)
+        local tag = self:MixEntropy(userId, 0xA5A5A5A5)
+        return "tk_" .. tostring(body) .. "_" .. tostring(tag)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer NewSingleSeed(string userId)
+        -- Produces a server-random single-mode seed the client cannot predict (secret-folded entropy).
+        return self:MixEntropy(userId, 0x3C3C3C3C)
     end
 
     @ExecSpace("ServerOnly")
@@ -58,7 +89,7 @@ script SeedService extends Logic
         end
 
         -- "single" (and any non-"ranked" mode is treated as single).
-        local seed = self:NewSingleSeed()
+        local seed = self:NewSingleSeed(userId)
         local token = self:NewToken(userId)
         self._T.sessions[token] = { userId = userId, seed = seed, dateKey = dateKey, mode = "single", issuedAt = DateTime.UtcNow, consumed = false }
         log("[SEED] single issued userId=" .. userId .. " seed=" .. tostring(seed))
