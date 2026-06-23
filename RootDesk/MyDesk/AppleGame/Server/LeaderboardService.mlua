@@ -1,0 +1,116 @@
+@Logic
+script LeaderboardService extends Logic
+	property integer BOARD_DAY     = 1
+	property integer BOARD_WEEK    = 2
+	property integer BOARD_ALLTIME = 3
+	property integer PAGE_SIZE     = 20
+
+	method string SanitizeTag(string name)
+		-- Returns a safe ranking tag: pipe-free (the engine's delimiter) and UTF-8 byte count <= 55.
+		local clean, _ = name:gsub("|", "")
+		-- Truncate to 55 bytes (simple byte slice; safe for ASCII/common Korean).
+		if #clean > 55 then
+			clean = clean:sub(1, 55)
+		end
+		return clean
+	end
+
+	method any FindPlayerRanking(string userId)
+		-- Searches connected users for the matching userId; nil if absent or DB not yet loaded.
+		for _, p in ipairs(_UserService.UserEntities.Values) do
+			if isvalid(p) then
+				local pc = p.PlayerComponent
+				if pc ~= nil and pc.UserId == userId then
+					local dbm = p.PlayerDBManager
+					if dbm ~= nil and dbm.IsLoadSuccess then
+						return p.PlayerRanking
+					end
+				end
+			end
+		end
+		return nil
+	end
+
+	@ExecSpace("ServerOnly")
+	method void SubmitScore(string userId, integer score)
+		-- Fan out a verified score to Day, Week, and AllTime boards with keep-max (force=false).
+		if score < 1 then
+			log_warning("[LeaderboardService] SubmitScore rejected: score < 1 for userId=" .. userId)
+			return
+		end
+
+		local playerRanking = self:FindPlayerRanking(userId)
+		if playerRanking == nil then
+			log_warning("[LeaderboardService] SubmitScore: PlayerRanking not ready for userId=" .. userId)
+			return
+		end
+
+		local elapsed = _DateTimeLogic:GetTimeElapsed()
+		local tag = self:SanitizeTag(userId)  -- Plan 4 will pass the display name; userId is the fallback
+		local extra = ""
+
+		local boards = { self.BOARD_DAY, self.BOARD_WEEK, self.BOARD_ALLTIME }
+		for _, boardId in ipairs(boards) do
+			local configData = _RankingConfigDataSetLogic:GetData(boardId)
+			if configData ~= nil then
+				local cycleIndex = configData:GetCycleIndex(elapsed)
+				local ok = playerRanking:SetScoreAndWait(boardId, cycleIndex, score, tag, extra, false)
+				log("[LeaderboardService] SubmitScore board=" .. boardId .. " cycleIndex=" .. cycleIndex .. " score=" .. score .. " ok=" .. tostring(ok))
+			else
+				log_warning("[LeaderboardService] SubmitScore: no config for boardId=" .. boardId)
+			end
+		end
+	end
+
+	@ExecSpace("Server")
+	method void RequestLeaderboard(integer boardId, integer pageNo)
+		-- Fetch the cached snapshot for the board/page and reply via ReceiveLeaderboard (stale=true).
+		local snap = _RankingDataStorageLogic:GetRankingSnapshot(boardId)
+		local entries = {}
+		local myRank = 0
+		local myScore = 0
+
+		if snap == nil then
+			-- InstanceRoom or snapshot not yet built — return empty with stale flag.
+			log("[LeaderboardService] RequestLeaderboard: snapshot nil for boardId=" .. boardId)
+			self:ReceiveLeaderboard(boardId, entries, myRank, myScore, true, senderUserId)
+			return
+		end
+
+		local validPageNo = snap:GetValidPageNo(pageNo, self.PAGE_SIZE)
+		local page = snap:GetRankingDataList(validPageNo, self.PAGE_SIZE)
+
+		for i, rd in ipairs(page) do
+			entries[i] = {
+				rank  = rd.Rank,   -- authoritative rank from the snapshot (set by CalculateRanks)
+				name  = rd.Tag,
+				score = rd.Score,
+			}
+		end
+
+		-- Look up the caller's own entry by ProfileCode (the snapshot key), NOT by UserId.
+		local senderEntity = _UserService:GetUserEntityByUserId(senderUserId)
+		if isvalid(senderEntity) and senderEntity.PlayerComponent ~= nil then
+			local profileCode = senderEntity.PlayerComponent.ProfileCode
+			local mine = snap:GetRankingDataByProfileCode(profileCode)
+			if mine ~= nil then
+				-- Read .Rank directly off the snapshot's RankingData (populated by CalculateRanks);
+				-- do NOT infer it from the page name/score.
+				myRank  = mine.Rank
+				myScore = mine.Score
+			else
+				-- nil = caller is outside the stored top-N snapshot; no rank to report.
+				log("[LeaderboardService] RequestLeaderboard: caller not in snapshot for boardId=" .. boardId)
+			end
+		end
+
+		-- stale=true always: snapshot may be up to 30+ minutes old.
+		self:ReceiveLeaderboard(boardId, entries, myRank, myScore, true, senderUserId)
+	end
+
+	@ExecSpace("Client")
+	method void ReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)
+		-- Route to the LeaderboardController UI (Plan 4 will connect this event).
+		log("[LeaderboardService] ReceiveLeaderboard boardId=" .. boardId .. " entryCount=" .. tostring(#entries) .. " stale=" .. tostring(stale))
+	end
+end
