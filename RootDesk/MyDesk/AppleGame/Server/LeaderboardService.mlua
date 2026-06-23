@@ -158,5 +158,7 @@ script LeaderboardService extends Logic
 		-- Callers pass a trailing senderUserId as the 6th call-site arg: the engine consumes it as the
 		-- @ExecSpace("Client") target userId, so it is intentionally NOT declared as a parameter here.
 		log("[LeaderboardService] ReceiveLeaderboard boardId=" .. boardId .. " entryCount=" .. tostring(#entries) .. " myRank=" .. tostring(myRank) .. " stale=" .. tostring(stale))
+		-- Plan 4 delivery bridge (direct call): render the rows in the leaderboard UI.
+		if _LeaderboardController ~= nil then _LeaderboardController:OnReceiveLeaderboard(boardId, entries, myRank, myScore, stale) end
 	end
 end

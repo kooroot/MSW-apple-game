@@ -113,6 +113,8 @@ script ScoreService extends Logic
     method void ReceiveSubmitResult(boolean accepted, integer finalScore, integer personalBest, string reason)
         -- Server->caller reply; the client Result UI (Plan 4) renders accepted/score/best or the rejection reason.
         log("[SCORE] client result accepted=" .. tostring(accepted) .. " score=" .. tostring(finalScore) .. " reason=" .. reason)
+        -- Plan 4 delivery bridge (direct call; _ResultController is a ClientOnly @Logic on this client).
+        if _ResultController ~= nil then _ResultController:ShowResult(accepted, finalScore, personalBest, reason) end
     end
 
     @ExecSpace("Server")
@@ -126,9 +128,8 @@ script ScoreService extends Logic
     @ExecSpace("Client")
     method void ReceivePersonalBest(integer personalBest)
         -- Server->caller: deliver the single-mode personal best to this client.
-        -- Bridge to the client controller the same way ReceiveSubmitResult is delivered
-        -- (Plan 4 Task 6 Step 1 delivery decision — e.g. fire a PersonalBestEvent the
-        -- LeaderboardController listens for, or call _LeaderboardController:OnReceivePersonalBest).
         log("[SCORE] ReceivePersonalBest personalBest=" .. personalBest)
+        -- Plan 4 delivery bridge (direct call): fill the Leaderboard "Single" tab label.
+        if _LeaderboardController ~= nil then _LeaderboardController:OnReceivePersonalBest(personalBest) end
     end
 end
