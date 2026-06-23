@@ -1,0 +1,23 @@
+{
+  "Id": "",
+  "GameId": "",
+  "EntryKey": "directory://4b802893f45b493b85a89b63c1b26683",
+  "ContentType": "x-mod/directory",
+  "Content": "",
+  "Usage": 0,
+  "UsePublish": 1,
+  "UseService": 0,
+  "CoreVersion": "26.5.0.0",
+  "StudioVersion": "",
+  "DynamicLoading": 0,
+  "ContentProto": {
+    "Use": "Json",
+    "Json": {
+      "entry_id": "directory://4b802893f45b493b85a89b63c1b26683",
+      "name": "AppleGame",
+      "lock": false,
+      "folding": false,
+      "nameEditable": true
+    }
+  }
+}

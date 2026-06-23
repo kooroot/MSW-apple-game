@@ -1,0 +1,33 @@
+@Logic
+script PuzzleCoreTest extends Logic
+    property integer passed = 0
+    property integer failed = 0
+
+    method void Expect(string name, boolean cond)
+        -- Records one assertion result to the log for maker_logs inspection.
+        if cond then
+            self.passed += 1
+            log("[TEST PASS] " .. name)
+        else
+            self.failed += 1
+            log_error("[TEST FAIL] " .. name)
+        end
+    end
+
+    method void Reset()
+        -- Clears counters before a test method run.
+        self.passed = 0
+        self.failed = 0
+    end
+
+    method void Summary()
+        -- Emits the final tally line that maker_logs is checked against.
+        log("[TEST SUMMARY] passed=" .. self.passed .. " failed=" .. self.failed)
+    end
+
+    method void TestHarness()
+        -- Smoke test proving the assert/log/execute loop is wired correctly.
+        self:Expect("harness_true", true)
+        self:Expect("harness_eq", 1 + 1 == 2)
+    end
+end
