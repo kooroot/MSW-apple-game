@@ -11,12 +11,44 @@ script RankAttemptStore extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method table InFlight()
+        -- Lazily-created in-memory guard set (server-instance scoped; non-persisted via _T).
+        if self._T.inFlight == nil then
+            self._T.inFlight = {}
+        end
+        return self._T.inFlight
+    end
+
+    @ExecSpace("ServerOnly")
     method boolean TryConsumeDaily(string userId, integer dateKey)
         -- Consumes today's ranked attempt; true only if newly consumed by THIS call, false if already
         -- consumed or on error (fail-closed).
+        -- CONCURRENCY: the GetAndWait -> SetAndWait create path is not atomic at the storage layer
+        -- (no create-CAS primitive exists: UpdateAndWait cannot create a missing key). An in-memory
+        -- per-(user,day) in-flight guard serializes concurrent same-key consumes within this server
+        -- instance, closing the TOCTOU double-grant window. A user is bound to one instance, so all
+        -- their RPCs share this @Logic singleton. The check+set is synchronous (no AndWait yield
+        -- between them), so it is atomic relative to other RPCs; the guard is released on the single
+        -- exit below.
+        local guard = self:InFlight()
+        local gk = userId .. "|" .. tostring(dateKey)
+        if guard[gk] then
+            log_warning("[RAS] concurrent consume blocked (in-flight) key=" .. self:AttemptKey(dateKey))
+            return false
+        end
+        guard[gk] = true
+        local ok = self:ConsumeDailyInner(userId, dateKey)
+        guard[gk] = nil
+        return ok
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean ConsumeDailyInner(string userId, integer dateKey)
+        -- Storage-level consume, serialized by TryConsumeDaily's in-flight guard. Do not call directly.
         -- EMPIRICAL DataStorage semantics (GATE B, verified at runtime 2026-06-23):
-        --   * UserDataStorage:GetAndWait returns ERR_OK with an EMPTY STRING for a missing key
-        --     (it does NOT return ERR_NOT_FOUND) -> branch on the VALUE, not the errCode.
+        --   * GetAndWait returns ERR_OK with an EMPTY STRING for a missing key (it does NOT return
+        --     ERR_NOT_FOUND) -> branch on the VALUE, not the errCode. (ERR_NOT_FOUND is still tolerated
+        --     defensively in case a future build emits it for a missing key.)
         --   * UpdateAndWait cannot create a missing key (returns ERR_NOT_FOUND) -> first write must
         --     use SetAndWait. CAS (UpdateAndWait) is reserved for an existing unexpected value.
         local storage = _DataStorageService:GetUserDataStorage(userId)
@@ -66,10 +98,12 @@ script RankAttemptStore extends Logic
     @ExecSpace("ServerOnly")
     method integer GetPersonalBest(string userId)
         -- Reads the stored personal best (string-serialized integer); 0 when not yet set.
+        -- GetAndWait returns ERR_OK+"" for a missing key (not ERR_NOT_FOUND); a missing/empty/
+        -- non-numeric value coerces to 0 via tonumber, so there is no separate NotFound branch.
         local storage = _DataStorageService:GetUserDataStorage(userId)
         local readErr, raw = storage:GetAndWait("personalBest")
-        if readErr == self.ERR_NOT_FOUND then return 0 end
-        if readErr ~= self.ERR_OK then
+        if readErr ~= self.ERR_OK and readErr ~= self.ERR_NOT_FOUND then
+            -- Genuine read failure (timeout / exhausted / internal): treat best as unknown -> 0.
             log_warning("[RAS] personalBest Get failed errCode=" .. tostring(readErr))
             return 0
         end
@@ -83,6 +117,10 @@ script RankAttemptStore extends Logic
         -- Keep-max write with dirty check: writes only when strictly higher; returns the resulting best.
         -- Single integer return (NOT multi-return): MSW user-defined method bodies do not support
         -- `method T1, T2 Name(...)` — it triggers [LEA-3015] CannotLoad "Sequence contains no elements".
+        -- Assumes per-user score submission is serialized upstream (one game-end at a time). The
+        -- read->Set is not CAS, so truly-concurrent same-user writes could lose a higher update; this
+        -- never lowers a stored best (each writer only writes a strictly-higher candidate) and self-heals
+        -- on the next higher write. Not worth a billed CAS retry loop for the single-game-end flow (YAGNI).
         local current = self:GetPersonalBest(userId)
         if score <= current then
             return current
