@@ -76,8 +76,22 @@ script LeaderboardService extends Logic
 			local configData = _RankingConfigDataSetLogic:GetData(boardId)
 			if configData ~= nil then
 				local cycleIndex = configData:GetCycleIndex(elapsed)
+				-- Read the existing best BEFORE writing so an ok=false can be classified as the
+				-- EXPECTED keep-max outcome (score is not a new best) rather than a real write failure.
+				-- SetScoreAndWait(force=false) returns false for both cases; the boolean alone can't tell them apart.
+				local existing = playerRanking:GetUserData(boardId, cycleIndex)
+				local prevScore = 0
+				if existing ~= nil then
+					prevScore = existing.Score
+				end
 				local ok = playerRanking:SetScoreAndWait(boardId, cycleIndex, score, tag, extra, false)
-				log("[LeaderboardService] SubmitScore board=" .. boardId .. " cycleIndex=" .. cycleIndex .. " score=" .. score .. " ok=" .. tostring(ok))
+				if ok then
+					log("[LeaderboardService] SubmitScore board=" .. boardId .. " cycleIndex=" .. cycleIndex .. " newBest=" .. score .. " (prev=" .. prevScore .. ")")
+				elseif score <= prevScore then
+					log("[LeaderboardService] SubmitScore board=" .. boardId .. " kept prev=" .. prevScore .. " (submitted " .. score .. ", not a new best)")
+				else
+					log_warning("[LeaderboardService] SubmitScore board=" .. boardId .. " WRITE FAILED score=" .. score .. " (cycleIndex=" .. cycleIndex .. ")")
+				end
 			else
 				log_warning("[LeaderboardService] SubmitScore: no config for boardId=" .. boardId)
 			end
@@ -87,6 +101,14 @@ script LeaderboardService extends Logic
 	@ExecSpace("Server")
 	method void RequestLeaderboard(integer boardId, integer pageNo)
 		-- Fetch the cached snapshot for the board/page and reply via ReceiveLeaderboard (stale=true).
+		-- Reject board ids outside the three known boards rather than relying on the snapshot-nil path
+		-- (defense-in-depth: this is a client-callable @Server RPC, so boardId is client-supplied).
+		if boardId ~= self.BOARD_DAY and boardId ~= self.BOARD_WEEK and boardId ~= self.BOARD_ALLTIME then
+			log_warning("[LeaderboardService] RequestLeaderboard: invalid boardId=" .. tostring(boardId))
+			self:ReceiveLeaderboard(boardId, {}, 0, 0, true, senderUserId)
+			return
+		end
+
 		local snap = _RankingDataStorageLogic:GetRankingSnapshot(boardId)
 		local entries = {}
 		local myRank = 0
@@ -132,7 +154,9 @@ script LeaderboardService extends Logic
 
 	@ExecSpace("Client")
 	method void ReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)
-		-- Route to the LeaderboardController UI (Plan 4 will connect this event).
-		log("[LeaderboardService] ReceiveLeaderboard boardId=" .. boardId .. " entryCount=" .. tostring(#entries) .. " stale=" .. tostring(stale))
+		-- [SEAM:plan4-ui] Plan 4 wires this to the LeaderboardController UI; until then it only logs.
+		-- Callers pass a trailing senderUserId as the 6th call-site arg: the engine consumes it as the
+		-- @ExecSpace("Client") target userId, so it is intentionally NOT declared as a parameter here.
+		log("[LeaderboardService] ReceiveLeaderboard boardId=" .. boardId .. " entryCount=" .. tostring(#entries) .. " myRank=" .. tostring(myRank) .. " stale=" .. tostring(stale))
 	end
 end
