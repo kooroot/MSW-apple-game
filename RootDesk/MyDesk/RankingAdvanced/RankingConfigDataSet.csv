@@ -1,0 +1,4 @@
+Id,Key,Name,CycleEnum,ViewCount,RefreshIntervalMinutes,HasReward,RankModeEnum,MaxUserDataCount,ReleaseBaseTime,Disable
+1,ranked_daily,일간 랭킹,Day,100,30,,Index,,2026-01-01,
+2,ranked_weekly,주간 랭킹,Week,100,30,,Index,,2026-01-01,
+3,ranked_alltime,전체 랭킹,,100,30,,Index,,2026-01-01,
