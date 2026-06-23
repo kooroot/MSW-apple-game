@@ -286,8 +286,9 @@ b.sprite("Bar/TimerBg", { anchor: "top-center", pos: [0, -84], rect_size: [900, 
 b.sprite("Bar/TimerBg/Fill", { anchor: "stretch", pos: [0, 0], color: "#4CD964", sprite_type: 3, fill_method: 0, raycast: false });
 b.patchComponent("Bar/TimerBg/Fill", "MOD.Core.SpriteGUIRendererComponent", { Type: 3, FillMethod: 0, FillOrigin: 0, FillAmount: 1.0 });
 
-// Controller script entity (full-screen, invisible)
-b.script("HudCtl", "script.HudController", { anchor: "stretch", pos: [0, 0], rect_size: [1920, 1080] });
+// NOTE: HudController is a GLOBAL @Logic, NOT a UI-attached script. Do NOT add it via b.script().
+// A @Logic has no self.Entity and is not part of the .ui tree; it reaches these UI entities only
+// through property UUIDs injected by the builder's binding API in Step 3 (see below).
 
 b.write("ui/AppleGame/AppleHud.ui");
 console.log("HUD ids:", JSON.stringify({
@@ -455,8 +456,9 @@ b.patch("Grid/SelSum", { enable: false });
 // Full-board touch receiver, ON TOP of everything in this group (added last => highest sibling order)
 b.touchReceive("TouchPanel", { anchor: "middle-center", pos: [0, -30], rect_size: [GW, GH] });
 
-// Controller script entity
-b.script("BoardCtl", "script.BoardController", { anchor: "stretch", pos: [0, 0], rect_size: [1920, 1080] });
+// NOTE: BoardController is a GLOBAL @Logic, NOT a UI-attached script. Do NOT add it via b.script().
+// A @Logic has no self.Entity and is not in the .ui tree; it reaches Grid / SelOverlay / SelSum
+// exclusively through property UUIDs injected by the builder's binding API in Step 3 (see below).
 
 b.write("ui/AppleGame/AppleBoard.ui");
 console.log("grid id:", b.getId("Grid"), "touch id:", b.getId("TouchPanel"), "overlay id:", b.getId("Grid/SelOverlay"));
@@ -516,10 +518,11 @@ script BoardController extends Logic
         if not isvalid(sp) then return end
         if value > 0 then
             sp.Enable = true
-            sp.ImageRUID = { DataId = nil } -- replaced below by AssetCatalog RUID string set via SetAlpha-free path
-            sp.SpriteRUID = nil
             sp:SetAlpha(1)
-            -- Set the icon RUID (string form for ImageRUID via the DataRef wrapper is handled by patch in Maker; here we use the sprite tint + number text)
+            -- First-pass board render uses color + number text only (no icon RUID yet).
+            -- SpriteGUIRendererComponent has NO SpriteRUID field; its image field is ImageRUID
+            -- (a DataRef: { DataId = "hex" }). Real icons are assigned in the focused follow-up
+            -- noted below via sp.ImageRUID = { DataId = ruid } — never as a plain string.
             if isvalid(tx) then tx.Text = tostring(value) end
         else
             sp.Enable = false
@@ -1022,8 +1025,9 @@ b.patchComponent("Panel/BtnRetry", "MOD.Core.SpriteGUIRendererComponent", { Colo
 b.button("Panel/BtnRank", "랭킹", { anchor: "bottom-center", pos: [180, 60], rect_size: [300, 100], font_size: 36, color: "#FFFFFF" });
 b.patchComponent("Panel/BtnRank", "MOD.Core.SpriteGUIRendererComponent", { Color: { r: 0.20, g: 0.35, b: 0.70, a: 1 } });
 
-// Controller
-b.script("ResultCtl", "script.ResultController", { anchor: "stretch", pos: [0, 0], rect_size: [1920, 1080] });
+// NOTE: ResultController is a GLOBAL @Logic, NOT a UI-attached script. Do NOT add it via b.script().
+// A @Logic has no self.Entity and is not in the .ui tree; it reaches the popup entities only
+// through property UUIDs injected by the builder's binding API in Step 3 (see below).
 
 b.write("ui/AppleGame/AppleResult.ui");
 console.log("result ids:", b.getId("Panel"), b.getId("Panel/BtnRetry"), b.getId("Panel/BtnRank"));
@@ -1204,13 +1208,15 @@ b.patchComponent("Panel/BtnClose", "MOD.Core.SpriteGUIRendererComponent", { Colo
 
 // Single-tab personal-best panel (hidden by default; shown only when Tab 4 is active)
 b.text("Panel/SinglePB", "내 최고 점수: -", { anchor: "center", pos: [0, 0], font_size: 40, color: "#FFE680" });
-b.setEnable("Panel/SinglePB", false);
+b.patch("Panel/SinglePB", { enable: false });
 
 // Multi-tab locked placeholder (hidden by default; shown only when Tab 5 is active)
 b.text("Panel/MultiLocked", "🔒 준비 중 (Phase 2)", { anchor: "center", pos: [0, 0], font_size: 40, color: "#AAAAAA" });
-b.setEnable("Panel/MultiLocked", false);
+b.patch("Panel/MultiLocked", { enable: false });
 
-b.script("LbCtl", "script.LeaderboardController", { anchor: "stretch", pos: [0, 0], rect_size: [1920, 1080] });
+// NOTE: LeaderboardController is a GLOBAL @Logic, NOT a UI-attached script. Do NOT add it via b.script().
+// A @Logic has no self.Entity and is not in the .ui tree; it reaches the popup entities only
+// through property UUIDs injected by the builder's binding API in Step 3 (see below).
 
 b.write("ui/AppleGame/AppleLeaderboard.ui");
 console.log("lb ids:", b.getId("Panel/List"), b.getId("Panel/List/RowTemplate"), b.getId("Panel/MyRank"), b.getId("Panel/SinglePB"), b.getId("Panel/MultiLocked"));

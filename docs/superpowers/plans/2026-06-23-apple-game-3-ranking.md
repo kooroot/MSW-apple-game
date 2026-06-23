@@ -4,7 +4,7 @@
 
 **Goal:** Install the `ranking-advanced` package, author three leaderboard config rows (Day / Week / AllTime), implement `_LeaderboardService` with 3-board fan-out, and wire `_ScoreService`'s ranked path to call it — so a verified ranked run is immediately reflected in all three boards.
 
-**Architecture:** `ranking-advanced` package files are copied into `RootDesk/MyDesk/RankingAdvanced/` (Util + Core). A new `_LeaderboardService` `@Logic` (ServerOnly) wraps `PlayerRanking:SetScoreAndWait` with the corrected 6-param signature and `_RankingDataStorageLogic:GetRankingSnapshot` for reads. `_ScoreService` (Plan 2) calls `_LeaderboardService:SubmitScore` on accept — replacing the Plan-2 stub. Two Maker-only user actions are required for `DefaultPlayer` components and `WorldConfig`; these are clearly labelled.
+**Architecture:** An explicitly-listed subset of `ranking-advanced` package files (Util + Core + two required `Sample/` files: `PlayerDBManager.mlua` and `RankingViewLogic.mlua`) is vendored into `RootDesk/MyDesk/RankingAdvanced/`, mirroring the upstream `Util/`, `Core/`, and `Sample/` subfolders, with an MIT `NOTICE` placed beside them. A new `_LeaderboardService` `@Logic` (ServerOnly) wraps `PlayerRanking:SetScoreAndWait` with the corrected 6-param signature and `_RankingDataStorageLogic:GetRankingSnapshot` for reads. `_ScoreService` (Plan 2) calls `_LeaderboardService:SubmitScore` on accept — keeping the Plan-2 `_LeaderboardService ~= nil` guard, whose true branch simply activates once the real service ships. Two Maker-only user actions are required for `DefaultPlayer` components and `WorldConfig`; these are clearly labelled.
 
 **Tech Stack:** mlua (MSW @Logic, ServerOnly), `ranking-advanced-package` (MSW first-party), `RankingConfigDataSet.csv` (UserDataSet), MSW Maker MCP (`maker_refresh_workspace`, `maker_play`, `maker_logs`, `maker_execute_script`, `maker_stop`), `_DataStorageService` (UserDataStorage, ServerOnly).
 
@@ -18,7 +18,7 @@ All constraints from `docs/superpowers/specs/2026-06-23-maple-apple-game-design.
 - `PlayerRanking:SetScoreAndWait` has **6 params**: `(integer id, integer cycleIndex, integer score, string tag, string extra, boolean force)`. No defaults — always pass all 6. `force=false` = keep-max (higher score wins). (GATE C Correction 1)
 - `cycleIndex` must be computed as `configData:GetCycleIndex(_DateTimeLogic:GetTimeElapsed())` — **not** hardcoded. (GATE C Correction 1)
 - Board ids are final: `BOARD_DAY=1`, `BOARD_WEEK=2`, `BOARD_ALLTIME=3`. (interfaces contract)
-- `CycleEnum` in CSV: Day=1, Week=2, AllTime=blank (None=0). There is **no all-time constant** — blank means `None`. (GATE C Correction 2)
+- `CycleEnum` in CSV is a **STRING** (`Day` / `Week` / `Month` / `Year`), parsed by `_CycleEnum:ToEnum(...)` to `Day=1, Week=2, Month=3, Year=4`; AllTime = **blank** = `None` (=0). Write the strings `Day`/`Week`/blank in the CSV — NOT numeric `1`/`2`. There is **no all-time constant** — blank means `None`. (GATE C Correction 2)
 - `RefreshIntervalMinutes >= 30` (enforced by engine). `ViewCount <= 1000`. `tag` ≤ 55 bytes, **no `|`** character. (GATE C Correction 3, spec §7.2)
 - `leaderboard snapshot is ≥ 30-min stale` — test verifies submit + per-player read, not that the public list updates immediately. (GATE C Correction 3)
 - All DataStorage calls are **ServerOnly**, event-driven (never in `OnUpdate`). (msw-scripting §12, datastorage.md rule 1)
@@ -26,7 +26,7 @@ All constraints from `docs/superpowers/specs/2026-06-23-maple-apple-game-design.
 - Every `method` body has its doc comment as the **first line inside** the body. (msw-scripting §1.8)
 - After any `.mlua` create/modify: `maker_stop` → `maker_refresh_workspace` → `maker_logs(category="build")` (zero errors) before testing. (msw-scripting §1.5)
 - Commits: PUBLIC repo — explicit paths only (no `git add -A`); run `git diff --cached | grep -iE 'df285f|bearer [a-z0-9]'` before every commit (must be empty); HEREDOC trailers `Co-Authored-By:` + `Claude-Session:` on every commit.
-- **Licensing note (action required before Task 1):** The `ranking-advanced-package` source files are MSW first-party code being copied into a PUBLIC repository. Confirm the package license permits redistribution before writing files. If redistribution is not permitted, reference/install via the Maker modpackage installer instead of vendoring. Flag this for the controller. **Do not assume permission.**
+- **Licensing note (MIT — vendoring permitted):** The `ranking-advanced-package` source files are MSW first-party code under the **MIT License** (repo root `LICENSE`: "MIT License / Copyright (c) 2025 MSW-Git"; README confirms MIT). Vendoring into this PUBLIC repository is permitted. MIT requires retaining the copyright + permission notice in all copies, so a `LICENSE`/`NOTICE` file MUST be placed beside the vendored files (see Task 1) attributing MSW-Git under the MIT License. `.mlua`/`.csv` comment headers are not required by MIT; the sibling notice file satisfies the notice-retention clause.
 
 ---
 
@@ -34,14 +34,16 @@ All constraints from `docs/superpowers/specs/2026-06-23-maple-apple-game-design.
 
 | File | Action | Responsibility |
 |---|---|---|
-| `RootDesk/MyDesk/RankingAdvanced/Util/*.mlua` | Copy from package | Package utility logic (AdminLogic, Base64Logic, CycleEnum, DataLoadLogic, DateTimeLogic, DayOfWeekEnum, ServerTimeOffsetChangedEvent, Util) |
-| `RootDesk/MyDesk/RankingAdvanced/Core/*.mlua` | Copy from package | Core ranking engine (PlayerDBManager, PlayerRanking, RankingDataStorageLogic, RankingConfigDataSetLogic, RankingConfigData, RankingSnapshotData, RankingViewLogic, etc.) |
-| `RootDesk/MyDesk/RankingAdvanced/Core/*.ui` | Copy from package | Package UI files (if any) → also `ui/` tree |
-| `RootDesk/MyDesk/RankingAdvanced/Core/*.model` | Copy from package → `RootDesk/MyDesk/Models/RankingAdvanced/` | Package models |
-| `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.csv` | Create | 3-row leaderboard config (Day/Week/AllTime) |
+| `RootDesk/MyDesk/RankingAdvanced/Util/*.mlua` (8 files) | Copy from package `MyDesk/Util/` | Package utility logic: `Base64Logic`, `CycleEnum`, `DataLoadLogic`, `DateTimeLogic`, `DayOfWeekEnum`, `ServerTimeOffsetChangedEvent`, `Util` (`DataLoadLogic.OnBeginPlay` initializes the enums — required) |
+| `RootDesk/MyDesk/RankingAdvanced/Core/*.mlua` (9 files) | Copy from package `MyDesk/RankingAdvanced/Core/` | Core ranking engine: `PlayerRanking`, `RankingConfigData`, `RankingConfigDataSetLogic`, `RankingData`, `RankingDataStorageLogic`, `RankingModeEnum`, `RankingSnapshotData`, `UserRankingData` |
+| `RootDesk/MyDesk/RankingAdvanced/Core/RankingConfigDataSet.csv` | Copy from package `MyDesk/RankingAdvanced/Core/` | Shipped config CSV (reference only; replaced by the 3-board CSV authored in Task 2) |
+| `RootDesk/MyDesk/RankingAdvanced/Sample/PlayerDBManager.mlua` | Copy from package `MyDesk/RankingAdvanced/Sample/` | Player DB component (attached to `DefaultPlayer`); reads `self.Entity.PlayerComponent.ProfileCode` |
+| `RootDesk/MyDesk/RankingAdvanced/Sample/RankingViewLogic.mlua` | Copy from package `MyDesk/RankingAdvanced/Sample/` | **Required runtime dependency** — `RankingSnapshotData.SetData` hard-calls `_RankingViewLogic:CalculateRanks(...)`, which populates `RankingData.Rank` |
+| `RootDesk/MyDesk/RankingAdvanced/NOTICE.md` | Create | MIT attribution for MSW-Git/MSWPackages (notice-retention) |
+| `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.csv` (authored) | Create | 3-row leaderboard config (Day/Week/AllTime) |
 | `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.userdataset` | Create | Metadata wrapper for the CSV |
 | `RootDesk/MyDesk/AppleGame/Server/LeaderboardService.mlua` | Create | `_LeaderboardService`: SubmitScore fan-out + RequestLeaderboard snapshot |
-| `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua` | Modify (seam) | Replace the `_LeaderboardService:SubmitScore` stub call left by Plan 2 |
+| `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua` | Verify (no edit) | KEEP the Plan-2 `_LeaderboardService ~= nil` guard; its true branch activates once the real service ships — no code change |
 
 ---
 
@@ -67,18 +69,78 @@ There is no pytest. "Run the test" means this sequence:
 
 Copies the package source into the workspace, checks for UUID/RUID collisions, and verifies the package builds cleanly.
 
-**Files:**
-- Create: `RootDesk/MyDesk/RankingAdvanced/Util/` (all Util `.mlua` files from package)
-- Create: `RootDesk/MyDesk/RankingAdvanced/Core/` (all Core `.mlua` + `.ui` + `.model` files from package)
-- Copy `.model` files: also into `RootDesk/MyDesk/Models/RankingAdvanced/`
+**Files (copy ONLY these explicitly-listed files — do NOT copy the rest of `Sample/` or any UI/HUD/GM-Tool files):**
+
+Vendored into `RootDesk/MyDesk/RankingAdvanced/`, preserving the upstream `Core/`, `Sample/`, and `Util/` subfolder layout. Source paths are under `ranking-advanced-package/MyDesk/...`; destination drops the `ranking-advanced-package/MyDesk/` prefix.
+
+- `RankingAdvanced/Core/PlayerRanking.mlua`
+- `RankingAdvanced/Core/RankingConfigData.mlua`
+- `RankingAdvanced/Core/RankingConfigDataSetLogic.mlua`
+- `RankingAdvanced/Core/RankingConfigDataSet.csv`
+- `RankingAdvanced/Core/RankingData.mlua`
+- `RankingAdvanced/Core/RankingDataStorageLogic.mlua`
+- `RankingAdvanced/Core/RankingModeEnum.mlua`
+- `RankingAdvanced/Core/RankingSnapshotData.mlua`
+- `RankingAdvanced/Core/UserRankingData.mlua`
+- `RankingAdvanced/Sample/PlayerDBManager.mlua` (under `Sample/`, NOT `Core/`)
+- `RankingAdvanced/Sample/RankingViewLogic.mlua` (under `Sample/`; required runtime dependency — see Interfaces)
+- `Util/Base64Logic.mlua`
+- `Util/CycleEnum.mlua`
+- `Util/DataLoadLogic.mlua`
+- `Util/DateTimeLogic.mlua`
+- `Util/DayOfWeekEnum.mlua`
+- `Util/ServerTimeOffsetChangedEvent.mlua`
+- `Util/Util.mlua`
+- Create: `RootDesk/MyDesk/RankingAdvanced/NOTICE.md` (MIT attribution)
+
+> **Why two `Sample/` files are required (do not skip them):**
+> - `PlayerDBManager.mlua` lives under `Sample/`, NOT `Core/`. It is the component attached to `DefaultPlayer` (Task 3) and reads `self.Entity.PlayerComponent.ProfileCode`.
+> - `RankingViewLogic.mlua` lives under `Sample/` and is a **hard runtime dependency of Core**: `RankingSnapshotData.SetData` calls `_RankingViewLogic:CalculateRanks(...)`, which is what populates `RankingData.Rank`. Without it, snapshot building fails and `.Rank` is never set.
+> - `DataLoadLogic.OnBeginPlay` calls `_Base64Logic:Init()`, `_DayOfWeekEnum:Init()`, `_CycleEnum:Init()`, `_RankingModeEnum:Init()`. Without `DataLoadLogic` (+ `Base64Logic`, `DayOfWeekEnum`, `DateTimeLogic`, `Util`) the enums are never populated and `ToEnum` silently returns `None` for everything, mis-parsing the CSV. `ServerTimeOffsetChangedEvent` is referenced by the Util time logic — include it to avoid a missing-type error.
+> - Everything else under `Sample/` (`RankingSampleUILogic`, the UI `.mlua`/`.model` files, and the GM Tool files) is NOT needed for the `PlayerDBManager` + `PlayerRanking` + config + myRank path — do NOT copy it.
 
 **Interfaces:**
 - Consumes: nothing (package is self-contained; no external package dependency per GATE C).
-- Produces: `_RankingDataStorageLogic`, `_RankingConfigDataSetLogic`, `_DateTimeLogic`, `_Util` Logic singletons available in play mode. `PlayerDBManager` and `PlayerRanking` components ready to attach to `DefaultPlayer` (user action — see USER ACTION IN MAKER).
+- Produces: `_RankingDataStorageLogic`, `_RankingConfigDataSetLogic`, `_DateTimeLogic`, `_Util`, `_RankingViewLogic` Logic singletons available in play mode. `PlayerDBManager` and `PlayerRanking` components ready to attach to `DefaultPlayer` (user action — see USER ACTION IN MAKER).
 
-- [ ] **Step 1: Check license before copying**
+- [ ] **Step 1: License is MIT — vendoring permitted; create the MIT NOTICE**
 
-  > **ACTION REQUIRED:** Before writing any files, confirm the `ranking-advanced-package` license permits copying into a public repository. Check `https://raw.githubusercontent.com/MSW-Git/MSWPackages/main/ranking-advanced-package/README.md` for a license section. If no explicit license is found or redistribution is not permitted, stop and ask the controller how to proceed (reference vs vendor). Only continue to Step 2 if redistribution is confirmed.
+  > **MIT confirmed — vendoring is permitted.** The repo root `LICENSE` is the MIT License ("MIT License / Copyright (c) 2025 MSW-Git"; the README also states MIT). No stop-gate. The only obligation is the MIT notice-retention clause: the copyright + permission notice MUST be included with the vendored copies.
+
+  Create `RootDesk/MyDesk/RankingAdvanced/NOTICE.md` with the MIT attribution text (verbatim copyright + permission notice). This satisfies the notice-retention requirement; per-file `.mlua`/`.csv` comment headers are NOT required by MIT.
+
+  ```markdown
+  # Third-Party Notice
+
+  This directory vendors files from **MSW-Git/MSWPackages** (`ranking-advanced-package`),
+  used under the MIT License.
+
+  ---
+
+  MIT License
+
+  Copyright (c) 2025 MSW-Git
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+  ```
+
+  (If the upstream `LICENSE` text differs verbatim, copy it exactly from `https://raw.githubusercontent.com/MSW-Git/MSWPackages/main/LICENSE` — the copyright line "Copyright (c) 2025 MSW-Git" must be retained.)
 
 - [ ] **Step 2: Fetch the package file tree**
 
@@ -95,9 +157,9 @@ Copies the package source into the workspace, checks for UUID/RUID collisions, a
 
 - [ ] **Step 3: UUID / RUID collision check**
 
-  Before writing, grep the workspace for every `id` and `EntryKey` that appears in the incoming `.ui` and `.model` files:
+  The vendored set is `.mlua` + `.csv` only (no `.ui`/`.model`), but `.mlua` files still carry script UUIDs in their paired `.codeblock` metadata once refreshed. Before writing, grep the workspace for any `id` / `EntryKey` declared by the incoming files and confirm none already exist:
   ```bash
-  grep -rE '"EntryKey":|"id":' RootDesk/MyDesk/ ui/ --include="*.ui" --include="*.model"
+  grep -rE '"EntryKey":|"id":' RootDesk/MyDesk/ ui/ --include="*.ui" --include="*.model" --include="*.codeblock"
   ```
   Compare against each incoming file's IDs. If any UUID collides, generate a fresh UUID:
   ```bash
@@ -107,21 +169,28 @@ Copies the package source into the workspace, checks for UUID/RUID collisions, a
 
 - [ ] **Step 4: Copy Util files**
 
-  Fetch each Util `.mlua` file from:
+  Fetch each Util file from:
   ```
   https://raw.githubusercontent.com/MSW-Git/MSWPackages/main/ranking-advanced-package/MyDesk/Util/<filename>
   ```
-  Write to `RootDesk/MyDesk/RankingAdvanced/Util/<filename>`. Do **not** copy `Sample/` content.
+  Write to `RootDesk/MyDesk/RankingAdvanced/Util/<filename>`. Copy ONLY the 7 listed Util files (`Base64Logic`, `CycleEnum`, `DataLoadLogic`, `DateTimeLogic`, `DayOfWeekEnum`, `ServerTimeOffsetChangedEvent`, `Util` — all `.mlua`). Do not copy any other Util files.
 
-- [ ] **Step 5: Copy Core files**
+- [ ] **Step 5: Copy Core + the two required Sample files**
 
-  Fetch each Core `.mlua` file from:
+  Fetch each Core file from:
   ```
   https://raw.githubusercontent.com/MSW-Git/MSWPackages/main/ranking-advanced-package/MyDesk/RankingAdvanced/Core/<filename>
   ```
-  Write `.mlua` files to `RootDesk/MyDesk/RankingAdvanced/Core/`.
-  Write any `.ui` files to both `RootDesk/MyDesk/RankingAdvanced/Core/` and `ui/` (as required by the platform).
-  Write any `.model` files to `RootDesk/MyDesk/Models/RankingAdvanced/`.
+  Write to `RootDesk/MyDesk/RankingAdvanced/Core/`. Copy ONLY the 9 listed Core files: `PlayerRanking.mlua`, `RankingConfigData.mlua`, `RankingConfigDataSetLogic.mlua`, `RankingConfigDataSet.csv`, `RankingData.mlua`, `RankingDataStorageLogic.mlua`, `RankingModeEnum.mlua`, `RankingSnapshotData.mlua`, `UserRankingData.mlua`.
+
+  Then fetch the **two required `Sample/` files** from:
+  ```
+  https://raw.githubusercontent.com/MSW-Git/MSWPackages/main/ranking-advanced-package/MyDesk/RankingAdvanced/Sample/PlayerDBManager.mlua
+  https://raw.githubusercontent.com/MSW-Git/MSWPackages/main/ranking-advanced-package/MyDesk/RankingAdvanced/Sample/RankingViewLogic.mlua
+  ```
+  Write both to `RootDesk/MyDesk/RankingAdvanced/Sample/`.
+
+  > Copy ONLY these explicitly-listed files (including the two from `Sample/`). Do NOT copy the rest of `Sample/` (`RankingSampleUILogic`, sample UI `.mlua`/`.model`, GM Tool files). The vendored set contains no `.ui` or `.model` files — there is nothing to write into `ui/` or `RootDesk/MyDesk/Models/RankingAdvanced/`.
 
 - [ ] **Step 6: Verify build is clean**
 
@@ -135,10 +204,11 @@ Copies the package source into the workspace, checks for UUID/RUID collisions, a
   Run play mode and probe:
   ```lua
   -- maker_execute_script, context="server"
-  local ok = _RankingDataStorageLogic ~= nil and _RankingConfigDataSetLogic ~= nil and _DateTimeLogic ~= nil
+  local ok = _RankingDataStorageLogic ~= nil and _RankingConfigDataSetLogic ~= nil and _DateTimeLogic ~= nil and _RankingViewLogic ~= nil
   log("[TEST PASS] package_logics_visible=" .. tostring(ok))
   ```
   Expected log line: `[TEST PASS] package_logics_visible=true`
+  (`_RankingViewLogic` must be present — `RankingSnapshotData.SetData` depends on it to populate `RankingData.Rank`.)
 
 - [ ] **Step 8: Commit package files**
 
@@ -147,11 +217,15 @@ Copies the package source into the workspace, checks for UUID/RUID collisions, a
   # Must produce no output before committing.
   git add RootDesk/MyDesk/RankingAdvanced/
   git commit -m "$(cat <<'EOF'
-  feat: vendor ranking-advanced package (Util + Core) into workspace
+  feat: vendor ranking-advanced package (Core + Util + 2 Sample files) into workspace
 
-  Copies MSW first-party ranking-advanced-package source into
-  RootDesk/MyDesk/RankingAdvanced/. UUID collision check passed (no
-  collisions). License confirmed as [INSERT LICENSE RESULT HERE] in Step 1.
+  Copies the explicitly-listed MSW first-party ranking-advanced-package
+  source (9 Core, 7 Util, plus Sample/PlayerDBManager.mlua and
+  Sample/RankingViewLogic.mlua) into RootDesk/MyDesk/RankingAdvanced/.
+  RankingViewLogic is a required runtime dependency (RankingSnapshotData.SetData
+  -> CalculateRanks populates RankingData.Rank). UUID collision check passed
+  (no collisions). License is MIT (Copyright (c) 2025 MSW-Git); NOTICE.md added
+  beside the vendored files to satisfy MIT notice retention.
 
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_0169R85bG8nYYQ3CuapDpDB5
@@ -169,6 +243,8 @@ Creates the `.userdataset` metadata wrapper and the `.csv` sidecar defining Day,
 - Create: `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.userdataset`
 - Create: `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.csv`
 
+> **Avoid a duplicate-dataset collision.** `RankingConfigDataSetLogic:Load` reads `_DataService:GetTable("RankingConfigDataSet"):GetAllRow()` — a single logical dataset named `RankingConfigDataSet`. Task 1 vendored the shipped example `Core/RankingConfigDataSet.csv` (2 rows, keys `Ranking1`/`Ranking2`) for reference only. The authored 3-board dataset here is the live one. Before finishing Task 2, ensure exactly ONE registered `RankingConfigDataSet` dataset exists: either replace the vendored `Core/RankingConfigDataSet.csv` contents with the 3 boards (and register it via the `.userdataset` wrapper), or keep the authored file as the sole registered dataset and treat the vendored `Core/` copy as inert reference (not registered). Two datasets both named `RankingConfigDataSet` would make `GetTable` ambiguous.
+
 **Interfaces:**
 - Consumes: nothing (static config).
 - Produces: Three board config rows readable via `_RankingConfigDataSetLogic`. Board ids 1/2/3 match the constants in `LeaderboardService` (Task 3).
@@ -181,11 +257,13 @@ Creates the `.userdataset` metadata wrapper and the `.csv` sidecar defining Day,
   ```
   (If that path 404s, check the file tree from Task 1 Step 2 for the correct path.)
 
-  Confirmed header from GATE C:
+  Confirmed header (verified against source — no spaces after commas in the shipped file; written by `RankingConfigData:Load` reading each column via `row:GetItem("Col")`):
   ```
-  Id, Key, Name, CycleEnum, ViewCount, RefreshIntervalMinutes, HasReward, RankModeEnum, MaxUserDataCount, ReleaseBaseTime, Disable
+  Id,Key,Name,CycleEnum,ViewCount,RefreshIntervalMinutes,HasReward,RankModeEnum,MaxUserDataCount,ReleaseBaseTime,Disable
   ```
-  Verify it matches the fetched file exactly. If there are additional columns, add them with safe defaults (blank or 0).
+  Verify it matches the fetched file exactly. Two source facts to honor:
+  - The shipped `RankingConfigDataSet.csv` begins with a **UTF-8 BOM** — preserve a UTF-8 (BOM) encoding when authoring the replacement.
+  - The shipped file has 2 example rows (keys `Ranking1`/`Ranking2`); Task 2 replaces it with the 3 boards below. If there are additional columns, add them with **blank** defaults (NOT `0` — see column semantics in Step 4; `"0"` is treated as non-empty/present and would wrongly enable presence-based columns).
 
 - [ ] **Step 2: Generate a fresh UUID for the dataset**
 
@@ -227,22 +305,25 @@ Creates the `.userdataset` metadata wrapper and the `.csv` sidecar defining Day,
 
 - [ ] **Step 4: Write the .csv sidecar**
 
-  Create `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.csv`:
+  Create `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.csv` (UTF-8 with BOM; no spaces after commas):
 
   ```csv
-  Id, Key, Name, CycleEnum, ViewCount, RefreshIntervalMinutes, HasReward, RankModeEnum, MaxUserDataCount, ReleaseBaseTime, Disable
-  1, ranked_daily, 일간 랭킹, 1, 100, 30, 0, 0, 0, 2026-01-01 00:00:00, 0
-  2, ranked_weekly, 주간 랭킹, 2, 100, 30, 0, 0, 0, 2026-01-01 00:00:00, 0
-  3, ranked_alltime, 전체 랭킹, , 100, 30, 0, 0, 0, 2026-01-01 00:00:00, 0
+  Id,Key,Name,CycleEnum,ViewCount,RefreshIntervalMinutes,HasReward,RankModeEnum,MaxUserDataCount,ReleaseBaseTime,Disable
+  1,ranked_daily,일간 랭킹,Day,100,30,,Index,,2026-01-01,
+  2,ranked_weekly,주간 랭킹,Week,100,30,,Index,,2026-01-01,
+  3,ranked_alltime,전체 랭킹,,100,30,,Index,,2026-01-01,
   ```
 
-  Notes:
-  - `CycleEnum`: Day board = `1`, Week board = `2`, AllTime board = **blank** (None=0 — no constant exists per GATE C Correction 2).
-  - `ViewCount` = `100` (top-100 per spec §16; well under the 1000 cap).
-  - `RefreshIntervalMinutes` = `30` (engine minimum; spec §16 originally said 5 but GATE C Correction 3 enforces ≥30 — this is the authoritative value).
-  - `HasReward` = `0` — no rank-based rewards in Phase 1 (spec §7.2, "score-based only").
-  - `ReleaseBaseTime` = `2026-01-01 00:00:00` — KST midnight anchor. This is the cycle boundary reference. It determines the KST-based day/week boundaries for `GetCycleIndex`. The actual daily puzzle boundary aligns with this because both derive from KST midnight (spec §7.1, §8.2).
-  - `Disable` = `0` (enabled).
+  Notes (column semantics verified from `RankingConfigData:Load` + `RankingConfigDataSetLogic:Load`; `_Util:IsNilorEmptyString` = `origin == nil or string.len(origin) == 0`, so `"0"` counts as **non-empty/present**):
+  - `CycleEnum` is a **STRING** parsed by `_CycleEnum:ToEnum(...)`. Valid strings are exactly `Day` / `Week` / `Month` / `Year`; any unrecognized/blank string maps to `None` (`None=0, Day=1, Week=2, Month=3, Year=4`). So Day board = `Day`, Week board = `Week`, AllTime board = **blank** (= `None`, no AllTime constant — GATE C Correction 2). **Do NOT use numeric `1`/`2`.**
+  - `RankModeEnum` is a **STRING** parsed by `_RankingModeEnum:ToEnum(...)` (`Index` / `Rank` / `DenseRank`); blank/unrecognized → `None`, which is then defaulted to `Index`. Use `Index` explicitly. **Do NOT use numeric `0`.**
+  - `HasReward` is **presence-based** (`not _Util:IsNilorEmptyString(...)`): **blank ⇒ false**; ANY non-empty string (including `"0"`) ⇒ true. Leave it **blank** for no rank-based rewards (spec §7.2, "score-based only"). A `"0"` here would wrongly enable rewards (and abort load because a reward requires a non-`None` cycle).
+  - `MaxUserDataCount` is numeric; **blank ⇒ defaults to 2**; a number `< 2` aborts load. Leave it **blank** (do NOT write `0`).
+  - `Disable` is **presence-based** in `RankingConfigDataSetLogic:Load` (`if not _Util:IsNilorEmptyString(disable) then continue end`): **blank ⇒ row IS loaded/enabled**; ANY non-empty string (including `"0"`) ⇒ the row is SKIPPED. Leave it **blank**. A `"0"` here would silently drop the board.
+  - `ViewCount` = `100` (top-100 per spec §16; must be `>0` and `<=1000`).
+  - `RefreshIntervalMinutes` = `30` (engine minimum; must be `>=30`. Spec §16 originally said 5 but GATE C Correction 3 enforces ≥30 — this is authoritative).
+  - `Key` is a string, must be non-empty, unique, and `<= 30` bytes (`ranked_daily`/`ranked_weekly`/`ranked_alltime` are well under).
+  - `ReleaseBaseTime` is a **STRING date** passed to `DateTime(...)` (only used when `CycleEnum != None`). For the two cycled rows it MUST be a valid date or load aborts ("The releaseBaseTime is not valid"); ISO `2026-01-01` is valid. For the blank-cycle AllTime row it is ignored, but keeping `2026-01-01` is harmless. This is the KST cycle-boundary anchor for `GetCycleIndex` (spec §7.1, §8.2).
   - If the package source has a different column order, reorder to match exactly.
 
 - [ ] **Step 5: Verify the dataset loads**
@@ -273,9 +354,10 @@ Creates the `.userdataset` metadata wrapper and the `.csv` sidecar defining Day,
   git commit -m "$(cat <<'EOF'
   feat: add RankingConfigDataSet with Day/Week/AllTime boards
 
-  Three boards: Day(CycleEnum=1), Week(CycleEnum=2), AllTime(CycleEnum=blank/None).
-  RefreshIntervalMinutes=30 (engine minimum), ViewCount=100, no rank rewards.
-  ReleaseBaseTime anchored at 2026-01-01 KST midnight.
+  Three boards: Day(CycleEnum=Day), Week(CycleEnum=Week), AllTime(CycleEnum=blank/None).
+  CycleEnum/RankModeEnum are string enums (Day/Week, Index); HasReward/MaxUserDataCount/Disable
+  left blank (presence-based: "0" would be non-empty and wrong). RefreshIntervalMinutes=30
+  (engine minimum), ViewCount=100, no rank rewards. ReleaseBaseTime anchored at 2026-01-01 KST.
 
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_0169R85bG8nYYQ3CuapDpDB5
@@ -373,17 +455,18 @@ The core of Plan 3. Wraps `PlayerRanking:SetScoreAndWait` (6-param corrected sig
 - Consumes (from Plan 2):
   - (none directly — ScoreService calls `_LeaderboardService:SubmitScore` not the reverse)
 - Consumes (from ranking-advanced package):
-  - `_RankingConfigDataSetLogic:GetRankingConfigData(integer boardId)` → `RankingConfigData`
+  - `_RankingConfigDataSetLogic:GetData(integer boardId)` → `RankingConfigData` (verified method name on `RankingConfigDataSetLogic`; there is NO `GetRankingConfigData`)
   - `configData:GetCycleIndex(number elapsed)` → `integer`
   - `_DateTimeLogic:GetTimeElapsed()` → `number` (package-internal elapsed, used for cycle computation)
   - `playerRanking:SetScoreAndWait(integer id, integer cycleIndex, integer score, string tag, string extra, boolean force)` → `boolean`
   - `playerEntity.PlayerDBManager.IsLoadSuccess` → `boolean`
+  - `playerEntity.PlayerComponent.ProfileCode` → `string` (the player's own profile code — the snapshot key)
   - `playerEntity.PlayerRanking` → `PlayerRanking` component
   - `_RankingDataStorageLogic:GetRankingSnapshot(integer boardId)` → `RankingSnapshotData | nil`
   - `snap:GetValidPageNo(integer pageNo, integer pageSize)` → `integer`
   - `snap:GetRankingDataList(integer validPageNo, integer pageSize)` → `table<RankingData>`
-  - `snap:GetRankingDataByProfileCode(string profileCode)` → `RankingData | nil`
-  - `RankingData` fields: `.ProfileCode` (string), `.Score` (integer), `.Tag` (string)
+  - `snap:GetRankingDataByProfileCode(string profileCode)` → `RankingData | nil` (returns nil if the player is outside the stored top-N snapshot)
+  - `RankingData` fields: `.ProfileCode` (string), `.Score` (integer), `.Tag` (string), `.Rank` (integer — populated by `_RankingViewLogic:CalculateRanks` during `SetData`)
 - Produces (for Plan 2 ScoreService seam):
   - `@ExecSpace("ServerOnly") method void SubmitScore(string userId, integer score)`
 - Produces (for Plan 4 LeaderboardController):
@@ -457,7 +540,7 @@ The core of Plan 3. Wraps `PlayerRanking:SetScoreAndWait` (6-param corrected sig
 
           local boards = { self.BOARD_DAY, self.BOARD_WEEK, self.BOARD_ALLTIME }
           for _, boardId in ipairs(boards) do
-              local configData = _RankingConfigDataSetLogic:GetRankingConfigData(boardId)
+              local configData = _RankingConfigDataSetLogic:GetData(boardId)
               if configData ~= nil then
                   local cycleIndex = configData:GetCycleIndex(elapsed)
                   local ok = playerRanking:SetScoreAndWait(boardId, cycleIndex, score, tag, extra, false)
@@ -488,25 +571,28 @@ The core of Plan 3. Wraps `PlayerRanking:SetScoreAndWait` (6-param corrected sig
           local validPageNo = snap:GetValidPageNo(pageNo, self.PAGE_SIZE)
           local page = snap:GetRankingDataList(validPageNo, self.PAGE_SIZE)
 
-          local startRank = (validPageNo - 1) * self.PAGE_SIZE + 1
           for i, rd in ipairs(page) do
               entries[i] = {
-                  rank  = startRank + (i - 1),
+                  rank  = rd.Rank,   -- authoritative rank from the snapshot (set by CalculateRanks)
                   name  = rd.Tag,
                   score = rd.Score,
               }
           end
 
-          -- Look up the caller's own entry by ProfileCode (== UserId in MSW).
-          local mine = snap:GetRankingDataByProfileCode(senderUserId)
-          if mine ~= nil then
-              myScore = mine.Score
-              -- Approximate rank from entries list (may not be on current page)
-              for _, e in ipairs(entries) do
-                  if e.name == mine.Tag and e.score == mine.Score then
-                      myRank = e.rank
-                      break
-                  end
+          -- Look up the caller's own entry by ProfileCode (the snapshot key).
+          -- ProfileCode comes from the caller's PlayerComponent, NOT from UserId.
+          local senderEntity = _UserService:GetUserEntityByUserId(senderUserId)
+          if isvalid(senderEntity) and senderEntity.PlayerComponent ~= nil then
+              local profileCode = senderEntity.PlayerComponent.ProfileCode
+              local mine = snap:GetRankingDataByProfileCode(profileCode)
+              if mine ~= nil then
+                  -- Read .Rank directly off the snapshot's RankingData — do NOT infer
+                  -- from page name/score. .Rank is populated by CalculateRanks in SetData.
+                  myRank  = mine.Rank
+                  myScore = mine.Score
+              else
+                  -- nil = caller is outside the stored top-N snapshot; no rank to report.
+                  log("[LeaderboardService] RequestLeaderboard: caller not in snapshot for boardId=" .. boardId)
               end
           end
 
@@ -528,8 +614,9 @@ The core of Plan 3. Wraps `PlayerRanking:SetScoreAndWait` (6-param corrected sig
 
   - `maker_stop` → `maker_refresh_workspace` → `maker_logs(category="build")`
   - Expected: **0 error-severity diagnostics**. Common LSP issues to pre-empt:
-    - If `_RankingConfigDataSetLogic` / `_DateTimeLogic` / `_RankingDataStorageLogic` show `LIA-1114 Info` (user cross-script ref), treat as noise — these are package Logic singletons and will resolve at runtime.
-    - If `PlayerRanking:SetScoreAndWait` shows a type error, confirm the exact signature in the installed package `.mlua` and adjust if the source differs from GATE C.
+    - If `_RankingConfigDataSetLogic` / `_DateTimeLogic` / `_RankingDataStorageLogic` / `_RankingViewLogic` show `LIA-1114 Info` (user cross-script ref), treat as noise — these are package Logic singletons and will resolve at runtime.
+    - Config accessor is `_RankingConfigDataSetLogic:GetData(boardId)` (verified). There is NO `GetRankingConfigData` method — do not reintroduce it.
+    - If `PlayerRanking:SetScoreAndWait` shows a type error, confirm the exact 6-param signature in the installed `Core/PlayerRanking.mlua` and adjust if the source differs from GATE C.
 
 - [ ] **Step 3: Commit**
 
@@ -553,60 +640,54 @@ The core of Plan 3. Wraps `PlayerRanking:SetScoreAndWait` (6-param corrected sig
 
 ---
 
-## Task 5: Wire ScoreService seam — replace Plan-2 stub
+## Task 5: Verify ScoreService seam — KEEP the Plan-2 guard
 
-Plan 2's `ScoreService.mlua` contains a stub call to `_LeaderboardService:SubmitScore` (marked as the Plan-3 seam). Replace that stub with the real call now that `LeaderboardService` exists.
+Plan 2's `ScoreService.mlua` already calls `_LeaderboardService:SubmitScore` from inside a `_LeaderboardService ~= nil` guard (the Plan-3 seam). Plan 2 mandates KEEPING that guard. **This task makes NO edit to `_ScoreService`** — shipping the real `_LeaderboardService` (Task 4) simply makes the guard's true branch activate at runtime. This task only verifies the seam is correct.
 
 **Files:**
-- Modify: `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua`
+- Verify (no edit expected): `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua`
 
 **Interfaces:**
 - Consumes (from Task 4): `_LeaderboardService:SubmitScore(string userId, integer score)` (ServerOnly)
-- Produces: no new interface — this closes the Plan-2 seam so ranked runs are actually recorded.
+- Produces: no new interface — once `_LeaderboardService` exists, the existing guarded call fires and ranked runs are recorded. No code change.
 
-- [ ] **Step 1: Read the current ScoreService to locate the seam**
+- [ ] **Step 1: Read the current ScoreService and confirm the guarded call**
 
   Read `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua` in full.
-  Locate the comment marking the Plan-3 seam. It should look like:
+  Confirm the Plan-2 seam keeps the nil-guard and calls `SubmitScore` with the `(userId, finalScore)` argument scope that matches `SubmitFor`. It should look like:
   ```lua
-  -- Plan-3 seam: replace with _LeaderboardService:SubmitScore(senderUserId, r.score)
-  -- (stub — LeaderboardService not yet implemented)
-  ```
-  Record the exact line(s) to replace.
-
-- [ ] **Step 2: Replace the stub with the real call**
-
-  Replace the stub block with:
-  ```lua
-  _LeaderboardService:SubmitScore(senderUserId, r.score)
-  ```
-
-  The surrounding context (from the interface contract) should look like:
-  ```lua
-  -- After replay validation passes and token is consumed:
-  if session.mode == "ranked" then
+  -- After replay validation passes and token is consumed (ranked runs only):
+  if session.mode == "ranked" and _LeaderboardService ~= nil then
       _LeaderboardService:SubmitScore(senderUserId, r.score)
   end
   ```
+  Record the exact line(s) for the verification note. Do NOT remove or replace the `_LeaderboardService ~= nil` guard, and do NOT make the call unguarded.
 
-  If the seam comment is not present (Plan 2 may have implemented it differently), search for `SubmitScore` in the file and confirm the call site. If it already calls `_LeaderboardService:SubmitScore` correctly, skip this step.
+- [ ] **Step 2: Confirm — no edit required (keep the guard)**
+
+  Do NOT delete, replace, or "unwrap" the `_LeaderboardService ~= nil` guard. The guard is intentional (Plan 2 contract): when `_LeaderboardService` is absent (e.g. Plan 3 not yet shipped) the call is safely skipped; now that Task 4 ships the real service, the guard's true branch activates automatically with **no edit to `_ScoreService`**. The call args remain `(senderUserId, r.score)` — i.e. `(userId, finalScore)` — matching the `SubmitFor` scope.
+
+  Only if the existing call signature/args are wrong (not the guard) — e.g. wrong argument order or a leftover placeholder identifier — make the minimal correction to the args while keeping the guard intact. If the guarded call is already correct, this task is verification-only and commits nothing in Step 4.
 
 - [ ] **Step 3: Verify build is clean**
 
   - `maker_stop` → `maker_refresh_workspace` → `maker_logs(category="build")`
   - Expected: **0 error-severity diagnostics**.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Commit (only if an args-level correction was actually made)**
+
+  If Step 2 required NO change (the guarded call was already correct), there is nothing to commit — skip this step. Only commit if you made a minimal args correction while keeping the guard:
 
   ```bash
   git diff --cached | grep -iE 'df285f|bearer [a-z0-9]'
   git add RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua
   git commit -m "$(cat <<'EOF'
-  feat: wire ScoreService ranked path to LeaderboardService.SubmitScore
+  fix: correct ScoreService SubmitScore args (keep _LeaderboardService nil-guard)
 
-  Replaces the Plan-2 seam stub with the real fan-out call now that
-  LeaderboardService is implemented. Ranked runs accepted by ScoreService
-  are now propagated to all three ranking boards.
+  Keeps the Plan-2 _LeaderboardService ~= nil guard intact; its true branch
+  activates now that LeaderboardService (Plan 3) ships. Only the call args
+  were corrected to (senderUserId, r.score) matching SubmitFor scope. No
+  guard was removed or unwrapped.
 
   Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_0169R85bG8nYYQ3CuapDpDB5
@@ -672,12 +753,14 @@ Drives a full end-to-end ranked submission through `LeaderboardService` using `m
 
           -- Find any connected player to test with
           local testUserId = nil
+          local testProfileCode = nil
           local testRanking = nil
           for _, p in ipairs(_UserService.UserEntities.Values) do
               if isvalid(p) then
                   local dbm = p.PlayerDBManager
                   if dbm ~= nil and dbm.IsLoadSuccess then
                       testUserId = p.PlayerComponent.UserId
+                      testProfileCode = p.PlayerComponent.ProfileCode  -- snapshot key (NOT UserId)
                       testRanking = p.PlayerRanking
                       break
                   end
@@ -706,15 +789,17 @@ Drives a full end-to-end ranked submission through `LeaderboardService` using `m
               -- We don't fail here because the first-ever run may not have built the snapshot yet
           end
 
-          -- Per-player read: GetRankingDataByProfileCode (reads from snapshot)
+          -- Per-player read: GetRankingDataByProfileCode (reads from snapshot).
+          -- The snapshot is keyed by ProfileCode, NOT UserId — use testProfileCode.
           -- The score we just submitted may not be in the snapshot yet (stale by design).
-          -- We verify the call does not crash and returns either nil (not in snapshot yet) or a RankingData.
+          -- We verify the call does not crash and returns either nil (player outside the
+          -- stored top-N snapshot) or a RankingData whose .Rank/.Score are readable.
           local snap1 = _RankingDataStorageLogic:GetRankingSnapshot(1)
           if snap1 ~= nil then
-              local mine = snap1:GetRankingDataByProfileCode(testUserId)
-              local readOk = mine == nil or (mine.Score ~= nil)
+              local mine = snap1:GetRankingDataByProfileCode(testProfileCode)
+              local readOk = mine == nil or (mine.Score ~= nil and mine.Rank ~= nil)
               self:Expect("per_player_read_no_crash", readOk)
-              log("[TEST] per_player_entry=" .. (mine ~= nil and tostring(mine.Score) or "nil (not in snapshot yet -- stale is expected)"))
+              log("[TEST] per_player_entry=" .. (mine ~= nil and ("rank=" .. tostring(mine.Rank) .. " score=" .. tostring(mine.Score)) or "nil (not in snapshot yet -- stale/out-of-snapshot is expected)"))
           else
               log("[TEST] snapshot nil -- per_player_read skipped (InstanceRoom or not yet built)")
               self:Expect("per_player_read_no_crash", true)  -- nil snapshot is not an error
@@ -784,8 +869,9 @@ Runs the full `msw-scripting/references/verify-checklist.md` against all files p
 **Files:**
 - Read (checklist): `msw-scripting/references/verify-checklist.md` (Skill: msw-scripting must be loaded first)
 - Review: `RootDesk/MyDesk/AppleGame/Server/LeaderboardService.mlua`
-- Review: `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua` (seam change only)
+- Review: `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua` (seam verify — `_LeaderboardService ~= nil` guard KEPT; no edit expected)
 - Review: `RootDesk/MyDesk/RankingAdvanced/RankingConfigDataSet.csv`
+- Review: `RootDesk/MyDesk/RankingAdvanced/NOTICE.md` (MIT attribution present)
 
 **Interfaces:**
 - Consumes: all files from Tasks 1–6.
@@ -804,12 +890,15 @@ Runs the full `msw-scripting/references/verify-checklist.md` against all files p
   - [ ] `senderUserId` is used (not declared) inside `RequestLeaderboard` body — correct.
   - [ ] `SetScoreAndWait` called with 6 args in order: `(boardId, cycleIndex, score, tag, extra, false)` — correct.
   - [ ] `cycleIndex` is computed via `configData:GetCycleIndex(elapsed)` — not hardcoded.
+  - [ ] Config accessed via `_RankingConfigDataSetLogic:GetData(boardId)` — NOT `GetRankingConfigData` (which does not exist).
+  - [ ] my-rank read via `PlayerComponent.ProfileCode` → `snap:GetRankingDataByProfileCode(profileCode).Rank` — `.Rank` read directly off the snapshot, NOT inferred from page name/score. `mine == nil` (out-of-snapshot player) handled.
   - [ ] `tag` passes through `SanitizeTag` (≤55 bytes, no `|`) before use.
   - [ ] `PlayerDBManager.IsLoadSuccess` is checked before `SetScoreAndWait`.
   - [ ] No DataStorage calls in `OnUpdate` or short timers.
   - [ ] `snap == nil` (InstanceRoom case) is handled — returns empty + stale=true.
   - [ ] Every `method` has its doc comment as the first line inside the body.
   - [ ] No `Global/` or `Environment/` files were modified.
+  - [ ] ScoreService seam: `_LeaderboardService ~= nil` guard is KEPT (not removed/unwrapped); call args are `(senderUserId, r.score)`.
 
 - [ ] **Step 3: Runtime final run**
 
@@ -842,7 +931,7 @@ Runs the full `msw-scripting/references/verify-checklist.md` against all files p
 **Spec coverage:**
 - §7.1 ranking-advanced package selection → Task 1 (install).
 - §7.1 RankingConfigDataSet 3 boards (Day/Week/AllTime) → Task 2 (CSV + userdataset).
-- §7.1 KST `ReleaseBaseTime` anchor → Task 2 Step 4 (`2026-01-01 00:00:00`).
+- §7.1 KST `ReleaseBaseTime` anchor → Task 2 Step 4 (`2026-01-01`).
 - §7.1 `force=false` keep-max fan-out → Task 4 (`SubmitScore` with `force=false`).
 - §7.2 `RefreshIntervalMinutes ≥ 30` → Task 2 (30 in CSV).
 - §7.2 `ViewCount ≤ 1000` → Task 2 (100 in CSV).
@@ -851,13 +940,15 @@ Runs the full `msw-scripting/references/verify-checklist.md` against all files p
 - §3 single=personal-best (no global board) → NOT in this plan (single personal best lives in `_RankAttemptStore` / `_ScoreService` in Plan 2; this plan handles only ranked boards). Confirmed out-of-scope for Plan 3.
 - §14 file structure (AppleGame/Server/, no catch-all) → Tasks 4–6.
 - GATE C Correction 1 (6-param signature) → Task 4 exactly.
-- GATE C Correction 2 (no AllTime constant — use blank/None) → Task 2 (blank CycleEnum for board 3).
+- GATE C Correction 2 (no AllTime constant — use blank/None) → Task 2 (blank string `CycleEnum` for board 3; Day/Week boards use the string enums `Day`/`Week`, NOT numeric).
 - GATE C Correction 3 (≥30-min stale, RefreshIntervalMinutes ≥ 30) → Tasks 2 + 6 test expectations.
 - Cross-gate note: DefaultPlayer hosts ranking components even with avatar hidden → Task 3 (USER ACTION IN MAKER) + verify probe.
-- Licensing: flagged explicitly in Task 1 Step 1 and Global Constraints.
+- Licensing: MIT (confirmed) — vendoring permitted; `NOTICE.md` created in Task 1 Step 1 + noted in Global Constraints.
+- Config accessor: `_RankingConfigDataSetLogic:GetData(boardId)` (verified) → Task 4. The non-existent `GetRankingConfigData` is removed.
+- My-rank: read server-side via `PlayerComponent.ProfileCode` → `snap:GetRankingDataByProfileCode(profileCode).Rank` (verified) → Task 4 `RequestLeaderboard`. No page/score inference.
 
 **Placeholder scan:**
-- Task 1 Step 8 commit message contains `[INSERT LICENSE RESULT HERE]` — intentional: the license result is determined at runtime by Step 1. Replace before committing.
+- No `[INSERT ...]` placeholders remain (license is confirmed MIT; the Task 1 commit message states it directly).
 - No other "TBD", "TODO", or deferred implementation stubs.
 
 **Type consistency:**
@@ -872,10 +963,10 @@ Runs the full `msw-scripting/references/verify-checklist.md` against all files p
 
 > **Open questions / risks for the controller:**
 >
-> 1. **License (blocking):** No explicit redistribution license was found in the package at research time. Task 1 Step 1 is a hard stop until this is confirmed. If redistribution is not permitted, the plan must be revised to use Maker's modpackage installer instead of vendoring.
+> 1. **License (resolved — MIT):** The package is MIT-licensed (repo root `LICENSE`: "Copyright (c) 2025 MSW-Git"; README confirms MIT). Vendoring is permitted. The only obligation is notice retention, satisfied by `RootDesk/MyDesk/RankingAdvanced/NOTICE.md` (Task 1 Step 1). No blocker.
 >
 > 2. **DefaultPlayer hidden + ranking components:** GATE C cross-gate note confirms the entity exists even with renderer off. Verify during Task 3 that `PlayerDBManager.IsLoadSuccess` becomes `true` for a hidden-avatar player. If not (edge case: avatar renderer off suppresses DB load), Task 3's probe script will log `[TEST FAIL]` — escalate to MSW Discord.
 >
 > 3. **`GetCycleIndex` formula and weekly cycle start day:** GATE C notes these were "high-confidence but not byte-verified" from the package source. During Task 4 Step 2 (build verify), read the installed `RankingConfigData.mlua` and confirm `GetCycleIndex` signature and weekly rollover day (Sun vs Mon). If it differs from KST Monday-0 assumption, the daily seed rotation (keyed off the same KST midnight) may misalign with the Week board's cycle index by one day. Confirm and adjust `ReleaseBaseTime` if needed.
 >
-> 4. **`_RankingConfigDataSetLogic:GetRankingConfigData` exact name:** corroborated by usage in the package's `RankingViewLogic.mlua` but not byte-verified. Confirm the method name during Task 4 Step 2 by reading the installed file. If the name differs, update `LeaderboardService.mlua` before committing.
+> 4. **Config accessor name (resolved — `GetData`):** Verified from source — the method on `RankingConfigDataSetLogic` is `GetData(integer id)`. There is NO `GetRankingConfigData` method anywhere in the package. `LeaderboardService.mlua` uses `_RankingConfigDataSetLogic:GetData(boardId)`. Still re-confirm during Task 4 Step 2 by reading the installed file.

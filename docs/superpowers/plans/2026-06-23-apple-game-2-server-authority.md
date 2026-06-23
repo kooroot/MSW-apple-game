@@ -598,7 +598,7 @@ EOF
 
 ### Task 4: `_ScoreService` — token + time-window + payload validation + replay-trusted scoring
 
-Validates and records a completed run. Consumes the `_SeedService` session record. Validation order (reject on first failure, all rejections logged): (1) token exists and belongs to `senderUserId`; (2) token not yet consumed → mark consumed; (3) server-elapsed-since-issuance AND `clientElapsed` both within the 120s window + slack; (4) payload shape sane (move count cap, coordinate ranges, monotonic non-decreasing timestamps within window); (5) `_PuzzleCore:Replay(session.seed, moves)` and accept iff `r.ok and r.score == claimedScore`. On accept: update `personalBest` (keep-max) and, for `mode=="ranked"`, the **guarded** `_LeaderboardService:SubmitScore` (cross-plan seam). Reply via Client RPC. Also exposes `RequestPersonalBest` / `ReceivePersonalBest` for the Leaderboard "Single" tab (read-only, independent of the play flow).
+Validates and records a completed run. Consumes the `_SeedService` session record. Validation order (reject on first failure, all rejections logged): (1) token exists and belongs to `senderUserId`; (2) token not yet consumed → mark consumed; (3) server-elapsed-since-issuance AND `clientElapsed` both within the 120s window + slack; (4) payload shape sane (move count cap, coordinate ranges, monotonic non-decreasing timestamps within window); (5) `_PuzzleCore:Replay(session.seed, moves)` and accept iff `r.ok and r.score == claimedScore`. On accept: update `personalBest` (keep-max) **only for `mode=="single"`** — ranked scores must NOT pollute the single-tab personal best — then in both modes read the stored single best to populate the result reply (read-only for ranked), and, for `mode=="ranked"`, the **guarded** `_LeaderboardService:SubmitScore` (cross-plan seam). Reply via Client RPC. Also exposes `RequestPersonalBest` / `ReceivePersonalBest` for the Leaderboard "Single" tab (read-only, independent of the play flow).
 
 **Files:**
 - Create: `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua`
@@ -767,9 +767,14 @@ script ScoreService extends Logic
             return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "replay_mismatch" }
         end
 
-        -- Accept: keep-max personal best, and (ranked) fan out to the leaderboard (Plan 3 seam).
+        -- Accept: single-mode updates the keep-max personal best; ranked NEVER pollutes it
+        -- (ranked still reads the stored single best so the result popup can show it read-only),
+        -- and (ranked) fans out to the leaderboard (Plan 3 seam).
         local finalScore = r.score
-        local updated, best = _RankAttemptStore:SetPersonalBestIfHigher(userId, finalScore)
+        if session.mode == "single" then
+            _RankAttemptStore:SetPersonalBestIfHigher(userId, finalScore)
+        end
+        local personalBest = _RankAttemptStore:GetPersonalBest(userId)
 
         if session.mode == "ranked" then
             -- CROSS-PLAN SEAM: _LeaderboardService is installed by Plan 3. Guard until then.
@@ -780,8 +785,8 @@ script ScoreService extends Logic
             end
         end
 
-        log("[SCORE] accept userId=" .. userId .. " mode=" .. session.mode .. " score=" .. tostring(finalScore) .. " best=" .. tostring(best))
-        return { accepted = true, finalScore = finalScore, personalBest = best, reason = "ok" }
+        log("[SCORE] accept userId=" .. userId .. " mode=" .. session.mode .. " score=" .. tostring(finalScore) .. " best=" .. tostring(personalBest))
+        return { accepted = true, finalScore = finalScore, personalBest = personalBest, reason = "ok" }
     end
 
     @ExecSpace("Server")
@@ -984,7 +989,7 @@ Produce the §17.3 test-result report (Scenario / Env / Steps / Result / Evidenc
 
 **2. Placeholder scan:** No `TBD`/`TODO`/"add error handling"/"similar to Task N". The only intentionally-captured-at-runtime value is the undocumented CAS-mismatch errCode (Task 2 Step 4) — a live-observation gap explicitly flagged by GATE B, logged not hard-coded, not a deferred TODO. All methods have full bodies; reason strings are concrete.
 
-**3. Type consistency:** Names match across tasks and the interface contract — `_SeedService` (`KstDateKey`, `IssueFor`, `GetSession`, `MarkConsumed`, `RequestSeed`, `ReceiveSeed`), `_ScoreService` (`ValidatePayload`, `SubmitFor`, `SubmitRun`, `ReceiveSubmitResult`, `RequestPersonalBest`, `ReceivePersonalBest`, constants `GAME_SECONDS`/`GRACE_SECONDS`/`MAX_MOVES`, reasons `ok|bad_token|timing|replay_mismatch|already|bad_payload`), `_RankAttemptStore` (`AttemptKey`, `TryConsumeDaily`, `IsDailyConsumed`, `GetPersonalBest`, `SetPersonalBestIfHigher`). Return shapes are stable: session `{userId, seed, dateKey, mode, issuedAt, consumed}`; issuance `{token, seed, dateKey, alreadyPlayed, personalBest, mode}`; submit `{accepted, finalScore, personalBest, reason}`; `_PuzzleCore:Replay` `{score, ok}` and `move={rect={c1,r1,c2,r2}, t}` consumed exactly as Plan 1 produces. `integer` vs `number` is consistent (errCode/dateKey/score integer; clientElapsed/TotalSeconds number). `RequestPersonalBest` takes no params (read-only, uses `senderUserId`); `ReceivePersonalBest(integer personalBest)` matches the interface contract byte-for-byte.
+**3. Type consistency:** Names match across tasks and the interface contract — `_SeedService` (`KstDateKey`, `IssueFor`, `GetSession`, `MarkConsumed`, `RequestSeed`, `ReceiveSeed`), `_ScoreService` (`ValidatePayload`, `SubmitFor`, `SubmitRun`, `ReceiveSubmitResult`, `RequestPersonalBest`, `ReceivePersonalBest`, constants `GAME_SECONDS`/`GRACE_SECONDS`/`MAX_MOVES`, reasons `ok|bad_token|timing|replay_mismatch|already|bad_payload`), `_RankAttemptStore` (`AttemptKey`, `TryConsumeDaily`, `IsDailyConsumed`, `GetPersonalBest`, `SetPersonalBestIfHigher`). Return shapes are stable: session `{userId, seed, dateKey, mode, issuedAt, consumed}`; issuance `{token, seed, dateKey, alreadyPlayed, personalBest, mode}`; submit `{accepted, finalScore, personalBest, reason}` (where `personalBest` is the single-mode keep-max best — updated by `SetPersonalBestIfHigher` only when `session.mode=="single"`, and merely read via `GetPersonalBest` for ranked, never updated by ranked); `_PuzzleCore:Replay` `{score, ok}` and `move={rect={c1,r1,c2,r2}, t}` consumed exactly as Plan 1 produces. `integer` vs `number` is consistent (errCode/dateKey/score integer; clientElapsed/TotalSeconds number). `RequestPersonalBest` takes no params (read-only, uses `senderUserId`); `ReceivePersonalBest(integer personalBest)` matches the interface contract byte-for-byte.
 
 ---
 
