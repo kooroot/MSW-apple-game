@@ -1,0 +1,129 @@
+@Logic
+script ScoreService extends Logic
+    property integer GAME_SECONDS = 120
+    property number GRACE_SECONDS = 5.0
+    property integer MAX_MOVES = 256
+
+    @ExecSpace("ServerOnly")
+    method table ValidatePayload(table session, table moves, number clientElapsed)
+        -- Pure shape/time-window validation (no replay): count cap, coord ranges, monotonic timestamps, window.
+        -- Returns a table { ok = boolean, reason = string }: MSW method bodies cannot declare multi-return
+        -- (method T1,T2 Name -> [LEA-3015] CannotLoad); a table return carries the same (ok, reason) pair.
+        if type(moves) ~= "table" then return { ok = false, reason = "bad_payload" } end
+        if #moves > self.MAX_MOVES then return { ok = false, reason = "bad_payload" } end
+
+        local windowMax = self.GAME_SECONDS + self.GRACE_SECONDS
+        -- Client-reported elapsed must be within the window (and non-negative).
+        if clientElapsed < 0 or clientElapsed > windowMax then return { ok = false, reason = "timing" } end
+
+        local maxCol = _PuzzleCore.COLS - 1
+        local maxRow = _PuzzleCore.ROWS - 1
+        local prevT = -1.0
+        for i = 1, #moves do
+            local m = moves[i]
+            if type(m) ~= "table" or type(m.rect) ~= "table" then return { ok = false, reason = "bad_payload" } end
+            local rc = m.rect
+            if rc.c1 == nil or rc.r1 == nil or rc.c2 == nil or rc.r2 == nil then return { ok = false, reason = "bad_payload" } end
+            if rc.c1 < 0 or rc.c1 > maxCol or rc.c2 < 0 or rc.c2 > maxCol then return { ok = false, reason = "bad_payload" } end
+            if rc.r1 < 0 or rc.r1 > maxRow or rc.r2 < 0 or rc.r2 > maxRow then return { ok = false, reason = "bad_payload" } end
+            local t = m.t
+            if type(t) ~= "number" then return { ok = false, reason = "bad_payload" } end
+            if t < 0 or t > windowMax then return { ok = false, reason = "timing" } end
+            if t < prevT then return { ok = false, reason = "timing" } end   -- timestamps must be non-decreasing
+            prevT = t
+        end
+        return { ok = true, reason = "ok" }
+    end
+
+    @ExecSpace("ServerOnly")
+    method table SubmitFor(string userId, string token, table moves, integer claimedScore, number clientElapsed)
+        -- Full server-authoritative validation + replay-trusted scoring; returns the result payload.
+        local session = _SeedService:GetSession(token)
+
+        -- (1) token exists and belongs to the caller.
+        if session == nil or session.userId ~= userId then
+            log_warning("[SCORE] reject bad_token userId=" .. tostring(userId) .. " token=" .. tostring(token))
+            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "bad_token" }
+        end
+
+        -- (2) single-use: not yet consumed; consume now (atomic in single-threaded @Logic).
+        if session.consumed == true then
+            log_warning("[SCORE] reject already token=" .. token)
+            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "already" }
+        end
+        _SeedService:MarkConsumed(token)
+
+        -- (3) server elapsed since issuance within the window (authoritative; client time is only a cross-check).
+        local serverElapsed = (DateTime.UtcNow - session.issuedAt).TotalSeconds
+        local windowMax = self.GAME_SECONDS + self.GRACE_SECONDS
+        if serverElapsed < 0 or serverElapsed > windowMax then
+            log_warning("[SCORE] reject timing(server) elapsed=" .. tostring(serverElapsed))
+            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "timing" }
+        end
+
+        -- (4) payload shape + client-time-window sanity.
+        local pay = self:ValidatePayload(session, moves, clientElapsed)
+        if not pay.ok then
+            log_warning("[SCORE] reject payload reason=" .. pay.reason)
+            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = pay.reason }
+        end
+
+        -- (5) replay is the only source of truth for the score.
+        local r = _PuzzleCore:Replay(session.seed, moves)
+        if not (r.ok and r.score == claimedScore) then
+            log_warning("[SCORE] reject replay_mismatch ok=" .. tostring(r.ok) .. " replayScore=" .. tostring(r.score) .. " claimed=" .. tostring(claimedScore))
+            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "replay_mismatch" }
+        end
+
+        -- Accept: single-mode updates the keep-max personal best; ranked NEVER pollutes it
+        -- (ranked still reads the stored single best so the result popup can show it read-only),
+        -- and (ranked) fans out to the leaderboard (Plan 3 seam).
+        local finalScore = r.score
+        if session.mode == "single" then
+            _RankAttemptStore:SetPersonalBestIfHigher(userId, finalScore)
+        end
+        local personalBest = _RankAttemptStore:GetPersonalBest(userId)
+
+        if session.mode == "ranked" then
+            -- CROSS-PLAN SEAM: _LeaderboardService is installed by Plan 3. Guard until then.
+            if _LeaderboardService ~= nil then
+                _LeaderboardService:SubmitScore(userId, finalScore)
+            else
+                log_warning("[SEAM] _LeaderboardService not installed yet (Plan 3); ranked score not fanned out: " .. tostring(finalScore))
+            end
+        end
+
+        log("[SCORE] accept userId=" .. userId .. " mode=" .. session.mode .. " score=" .. tostring(finalScore) .. " best=" .. tostring(personalBest))
+        return { accepted = true, finalScore = finalScore, personalBest = personalBest, reason = "ok" }
+    end
+
+    @ExecSpace("Server")
+    method void SubmitRun(string token, table moves, integer claimedScore, number clientElapsed)
+        -- Client entry point: validates and scores the run for the authenticated caller, replies on their client.
+        local res = self:SubmitFor(senderUserId, token, moves, claimedScore, clientElapsed)
+        self:ReceiveSubmitResult(res.accepted, res.finalScore, res.personalBest, res.reason, senderUserId)
+    end
+
+    @ExecSpace("Client")
+    method void ReceiveSubmitResult(boolean accepted, integer finalScore, integer personalBest, string reason)
+        -- Server->caller reply; the client Result UI (Plan 4) renders accepted/score/best or the rejection reason.
+        log("[SCORE] client result accepted=" .. tostring(accepted) .. " score=" .. tostring(finalScore) .. " reason=" .. reason)
+    end
+
+    @ExecSpace("Server")
+    method void RequestPersonalBest()
+        -- Client->server: fetch this player's single-mode personal best for the Leaderboard "Single" tab.
+        local uid = senderUserId
+        local best = _RankAttemptStore:GetPersonalBest(uid)
+        self:ReceivePersonalBest(best, uid)   -- targetUserId appended at call site
+    end
+
+    @ExecSpace("Client")
+    method void ReceivePersonalBest(integer personalBest)
+        -- Server->caller: deliver the single-mode personal best to this client.
+        -- Bridge to the client controller the same way ReceiveSubmitResult is delivered
+        -- (Plan 4 Task 6 Step 1 delivery decision — e.g. fire a PersonalBestEvent the
+        -- LeaderboardController listens for, or call _LeaderboardController:OnReceivePersonalBest).
+        log("[SCORE] ReceivePersonalBest personalBest=" .. personalBest)
+    end
+end

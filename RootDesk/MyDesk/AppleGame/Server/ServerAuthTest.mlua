@@ -132,4 +132,65 @@ script ServerAuthTest extends Logic
             log("[INFO] ranked already consumed for dateKey=" .. tostring(dk) .. " (expected on reruns)")
         end
     end
+
+    @ExecSpace("ServerOnly")
+    method table FindOneValidPairOnBoard(integer seed)
+        -- Test helper: scans the generated board for the first horizontally-adjacent pair summing to 10.
+        local g = _PuzzleCore:GenerateBoard(seed)
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            for c = 0, _PuzzleCore.COLS - 2 do
+                if g[r][c] + g[r][c + 1] == 10 then
+                    return { rect = { c1 = c, r1 = r, c2 = c + 1, r2 = r }, t = 1.0 }
+                end
+            end
+        end
+        return nil
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TestSubmitValidation()
+        -- Validates accept path + every rejection path (bad token, wrong owner, reuse, timing, payload, replay mismatch).
+        local uid = self:LocalUserId()
+
+        -- 1) Unknown token -> bad_token.
+        local rBad = _ScoreService:SubmitFor(uid, "no_such_token", {}, 0, 1.0)
+        self:Expect("submit_unknown_token", rBad.accepted == false and rBad.reason == "bad_token")
+
+        -- 2) Accept path: fresh single session + one real valid move.
+        local s = _SeedService:IssueFor(uid, "single")
+        local mv = self:FindOneValidPairOnBoard(s.seed)
+        self:Expect("found_valid_move", mv ~= nil)
+        if mv ~= nil then
+            local rOk = _ScoreService:SubmitFor(uid, s.token, { mv }, 2, 5.0)
+            self:Expect("submit_accepts_valid", rOk.accepted == true and rOk.reason == "ok" and rOk.finalScore == 2)
+
+            -- 3) Reuse same token -> already.
+            local rReuse = _ScoreService:SubmitFor(uid, s.token, { mv }, 2, 5.0)
+            self:Expect("submit_token_reuse_blocked", rReuse.accepted == false and rReuse.reason == "already")
+        end
+
+        -- 4) Wrong owner -> bad_token.
+        local s2 = _SeedService:IssueFor(uid, "single")
+        local rOwner = _ScoreService:SubmitFor("someone_else", s2.token, {}, 0, 5.0)
+        self:Expect("submit_wrong_owner_blocked", rOwner.accepted == false and rOwner.reason == "bad_token")
+
+        -- 5) Timing: clientElapsed beyond window -> timing.
+        local s3 = _SeedService:IssueFor(uid, "single")
+        local rTime = _ScoreService:SubmitFor(uid, s3.token, {}, 0, 99999.0)
+        self:Expect("submit_timing_blocked", rTime.accepted == false and rTime.reason == "timing")
+
+        -- 6) Payload: out-of-range coordinate -> bad_payload.
+        local s4 = _SeedService:IssueFor(uid, "single")
+        local badMove = { rect = { c1 = 0, r1 = 0, c2 = 99, r2 = 0 }, t = 1.0 }
+        local rPay = _ScoreService:SubmitFor(uid, s4.token, { badMove }, 0, 5.0)
+        self:Expect("submit_bad_coord_blocked", rPay.accepted == false and rPay.reason == "bad_payload")
+
+        -- 7) Replay mismatch: valid move but lied-about score -> replay_mismatch.
+        local s5 = _SeedService:IssueFor(uid, "single")
+        local mv5 = self:FindOneValidPairOnBoard(s5.seed)
+        if mv5 ~= nil then
+            local rLie = _ScoreService:SubmitFor(uid, s5.token, { mv5 }, 9999, 5.0)
+            self:Expect("submit_score_lie_blocked", rLie.accepted == false and rLie.reason == "replay_mismatch")
+        end
+    end
 end
