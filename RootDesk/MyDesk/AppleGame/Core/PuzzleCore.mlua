@@ -49,4 +49,18 @@ script PuzzleCore extends Logic
         end
         return { valid = true, clearedCount = #cells }
     end
+
+    method table Replay(integer seed, table moves)
+        -- Regenerates the board from seed and applies moves in order; any invalid move => ok=false.
+        local grid = self:GenerateBoard(seed)
+        local score = 0
+        for i = 1, #moves do
+            local res = self:ApplyMove(grid, moves[i].rect)
+            if not res.valid then
+                return { score = score, ok = false }
+            end
+            score += res.clearedCount
+        end
+        return { score = score, ok = true }
+    end
 end

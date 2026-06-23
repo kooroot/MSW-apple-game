@@ -125,4 +125,34 @@ script PuzzleCoreTest extends Logic
         local r5 = _PuzzleCore:ApplyMove(z, { c1=0, r1=0, c2=99, r2=0 })
         self:Expect("out_of_range_invalid", r5.valid == false)
     end
+
+    method table FindOneHorizontalPair(table grid)
+        -- Test helper: returns the first horizontally-adjacent pair summing to 10, or nil.
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            for c = 0, _PuzzleCore.COLS - 2 do
+                if grid[r][c] + grid[r][c + 1] == 10 then
+                    return { rect = { c1 = c, r1 = r, c2 = c + 1, r2 = r }, t = 1.0 }
+                end
+            end
+        end
+        return nil
+    end
+
+    method void TestReplay()
+        -- Validates empty-run, a real valid single move, and the invalid-move short-circuit.
+        local empty = _PuzzleCore:Replay(0x12345678, {})
+        self:Expect("replay_empty_ok", empty.ok == true and empty.score == 0)
+
+        local board = _PuzzleCore:GenerateBoard(0x12345678)
+        local mv = self:FindOneHorizontalPair(board)
+        self:Expect("found_a_valid_pair", mv ~= nil)
+        if mv ~= nil then
+            local good = _PuzzleCore:Replay(0x12345678, { mv })
+            self:Expect("replay_valid_move", good.ok == true and good.score == 2)
+        end
+
+        -- A move that cannot be valid: a single in-range cell (one value, never sums to 10 alone unless ==10, impossible for 1..9)
+        local bad = _PuzzleCore:Replay(0x12345678, { { rect = { c1 = 0, r1 = 0, c2 = 0, r2 = 0 }, t = 1.0 } })
+        self:Expect("replay_invalid_move_short_circuits", bad.ok == false)
+    end
 end
