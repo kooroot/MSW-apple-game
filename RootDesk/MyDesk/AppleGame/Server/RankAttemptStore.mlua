@@ -1,0 +1,98 @@
+@Logic
+script RankAttemptStore extends Logic
+    -- DataStorage error codes (see datastorage.md §6).
+    property integer ERR_OK = 0
+    property integer ERR_NOT_FOUND = 1000002
+
+    @ExecSpace("ServerOnly")
+    method string AttemptKey(integer dateKey)
+        -- Builds the per-day ranked-attempt key, e.g. "rankAttempt:20260623".
+        return "rankAttempt:" .. tostring(dateKey)
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean TryConsumeDaily(string userId, integer dateKey)
+        -- Consumes today's ranked attempt; true only if newly consumed by THIS call, false if already
+        -- consumed or on error (fail-closed).
+        -- EMPIRICAL DataStorage semantics (GATE B, verified at runtime 2026-06-23):
+        --   * UserDataStorage:GetAndWait returns ERR_OK with an EMPTY STRING for a missing key
+        --     (it does NOT return ERR_NOT_FOUND) -> branch on the VALUE, not the errCode.
+        --   * UpdateAndWait cannot create a missing key (returns ERR_NOT_FOUND) -> first write must
+        --     use SetAndWait. CAS (UpdateAndWait) is reserved for an existing unexpected value.
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local key = self:AttemptKey(dateKey)
+
+        local readErr, cur = storage:GetAndWait(key)
+        if readErr ~= self.ERR_OK and readErr ~= self.ERR_NOT_FOUND then
+            -- Genuine read failure (timeout / exhausted / internal): cannot safely grant -> fail closed.
+            log_warning("[RAS] Get failed errCode=" .. tostring(readErr) .. " key=" .. key)
+            return false
+        end
+
+        if cur == "1" then
+            -- Already consumed today.
+            return false
+        end
+
+        if cur == nil or cur == "" then
+            -- Not set yet: create the flag. (UpdateAndWait cannot create a missing key.)
+            local setErr = storage:SetAndWait(key, "1")
+            if setErr == self.ERR_OK then
+                log("[RAS] consumed (first-write) key=" .. key)
+                return true
+            end
+            log_warning("[RAS] first-write Set failed errCode=" .. tostring(setErr) .. " key=" .. key)
+            return false
+        end
+
+        -- Key holds an unexpected non-"1" value: CAS from the observed value to "1".
+        local updErr, newVal = storage:UpdateAndWait(key, cur, "1")
+        if updErr == self.ERR_OK and newVal == "1" then
+            log("[RAS] consumed (CAS) key=" .. key)
+            return true
+        end
+        log_warning("[RAS] CAS update failed errCode=" .. tostring(updErr) .. " key=" .. key)
+        return false
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsDailyConsumed(string userId, integer dateKey)
+        -- Read-only diagnostic check; not on the issuance hot path (avoids an extra billed read).
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local readErr, cur = storage:GetAndWait(self:AttemptKey(dateKey))
+        return readErr == self.ERR_OK and cur == "1"
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer GetPersonalBest(string userId)
+        -- Reads the stored personal best (string-serialized integer); 0 when not yet set.
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local readErr, raw = storage:GetAndWait("personalBest")
+        if readErr == self.ERR_NOT_FOUND then return 0 end
+        if readErr ~= self.ERR_OK then
+            log_warning("[RAS] personalBest Get failed errCode=" .. tostring(readErr))
+            return 0
+        end
+        local n = tonumber(raw)
+        if n == nil then return 0 end
+        return math.floor(n)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer SetPersonalBestIfHigher(string userId, integer score)
+        -- Keep-max write with dirty check: writes only when strictly higher; returns the resulting best.
+        -- Single integer return (NOT multi-return): MSW user-defined method bodies do not support
+        -- `method T1, T2 Name(...)` — it triggers [LEA-3015] CannotLoad "Sequence contains no elements".
+        local current = self:GetPersonalBest(userId)
+        if score <= current then
+            return current
+        end
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local setErr = storage:SetAndWait("personalBest", tostring(score))
+        if setErr ~= self.ERR_OK then
+            log_warning("[RAS] personalBest Set failed errCode=" .. tostring(setErr))
+            return current
+        end
+        return score
+    end
+end

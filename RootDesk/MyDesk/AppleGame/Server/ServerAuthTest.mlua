@@ -57,4 +57,36 @@ script ServerAuthTest extends Logic
         self:TestHarness()
         self:Summary()
     end
+
+    @ExecSpace("ServerOnly")
+    method void TestRankAttemptStore()
+        -- Verifies daily attempt CAS: first consume true, immediate re-consume false (same day).
+        local uid = self:LocalUserId()
+        self:Expect("ras_has_uid", uid ~= "")
+        -- Per-run salted key so reruns don't collide with a previously-consumed key (test-only;
+        -- real code uses the KST dateKey).
+        local now = DateTime.UtcNow
+        local saltedKey = (now.Year * 10000 + now.Month * 100 + now.Day) * 100000 + (now.Hour * 3600 + now.Minute * 60 + now.Second) % 100000
+        local first = _RankAttemptStore:TryConsumeDaily(uid, saltedKey)
+        self:Expect("ras_first_consume_true", first == true)
+        local second = _RankAttemptStore:TryConsumeDaily(uid, saltedKey)
+        self:Expect("ras_second_consume_false", second == false)
+        local consumedNow = _RankAttemptStore:IsDailyConsumed(uid, saltedKey)
+        self:Expect("ras_is_consumed_after", consumedNow == true)
+        local fresh = _RankAttemptStore:IsDailyConsumed(uid, saltedKey + 1)
+        self:Expect("ras_fresh_key_not_consumed", fresh == false)
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TestPersonalBest()
+        -- Verifies keep-max personal best: higher updates, lower/equal keeps the max (single-int return).
+        local uid = self:LocalUserId()
+        local base = _RankAttemptStore:GetPersonalBest(uid)  -- whatever is stored (0 if none)
+        local best1 = _RankAttemptStore:SetPersonalBestIfHigher(uid, base + 50)
+        self:Expect("pb_higher_updates", best1 == base + 50)
+        local best2 = _RankAttemptStore:SetPersonalBestIfHigher(uid, base + 10)
+        self:Expect("pb_lower_keeps_max", best2 == base + 50)
+        local readBack = _RankAttemptStore:GetPersonalBest(uid)
+        self:Expect("pb_read_back_max", readBack == base + 50)
+    end
 end
