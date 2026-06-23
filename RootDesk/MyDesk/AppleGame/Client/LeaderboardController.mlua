@@ -49,24 +49,30 @@ script LeaderboardController extends Logic
         -- Tabs need a per-tab boardId, so each handler is a closure (captures self). MSW
         -- ConnectEvent dispatches with self bound; the token is stored for OnEndPlay teardown.
         if isvalid(self.tabDay) then
-            self.dayHandler = self.tabDay.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_DAY) end)
+            self.dayHandler = self.tabDay.Entity:ConnectEvent(ButtonClickEvent, function() self:PlayClick() self:SelectTab(self.BOARD_DAY) end)
         end
         if isvalid(self.tabWeek) then
-            self.weekHandler = self.tabWeek.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_WEEK) end)
+            self.weekHandler = self.tabWeek.Entity:ConnectEvent(ButtonClickEvent, function() self:PlayClick() self:SelectTab(self.BOARD_WEEK) end)
         end
         if isvalid(self.tabAll) then
-            self.allHandler = self.tabAll.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_ALLTIME) end)
+            self.allHandler = self.tabAll.Entity:ConnectEvent(ButtonClickEvent, function() self:PlayClick() self:SelectTab(self.BOARD_ALLTIME) end)
         end
         if isvalid(self.tabSingle) then
-            self.singleHandler = self.tabSingle.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_SINGLE) end)
+            self.singleHandler = self.tabSingle.Entity:ConnectEvent(ButtonClickEvent, function() self:PlayClick() self:SelectTab(self.BOARD_SINGLE) end)
         end
         if isvalid(self.tabMulti) then
-            self.multiHandler = self.tabMulti.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_MULTI) end)
+            self.multiHandler = self.tabMulti.Entity:ConnectEvent(ButtonClickEvent, function() self:PlayClick() self:SelectTab(self.BOARD_MULTI) end)
         end
         if isvalid(self.btnClose) then
-            self.closeHandler = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, function() self:Hide() end)
+            self.closeHandler = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, function() self:PlayClick() self:Hide() end)
         end
         log("[LeaderboardController] ready")
+    end
+
+    method void PlayClick()
+        -- Plays the shared UI click SFX. Called from the tab/close button closures only (not from
+        -- SelectTab/Hide, which also run programmatically/server-side) so a click sounds exactly once.
+        _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
     end
 
     method void Open(integer boardId)
