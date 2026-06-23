@@ -1,0 +1,107 @@
+@Logic
+@ExecSpace("ClientOnly")
+script ResultController extends Logic
+
+    -- UI entity / component refs. Injected by the UIBuilder bind step (placeholder UUIDs until then).
+    property Entity panel = "8514b994-aabd-44e4-82a5-37c02133cb43"
+    property Entity dimmer = "079c8a1a-d504-4166-a0d5-885e00f86bb4"
+    property TextComponent title = "20baa56f-d898-48f9-849b-3cecec4e45bf"
+    property TextComponent scoreLine = "4d6859ea-2774-4d80-879e-70635d5b7c80"
+    property TextComponent bestLine = "5d9898d4-fe47-4cb0-b919-5e39dcda6bc3"
+    property TextComponent reasonLine = "abcde222-2ae1-4588-a4fb-77e64ff495d6"
+    property ButtonComponent btnRetry = "3ec2cadc-b3e8-4627-8236-50b04e0fa0bb"
+    property ButtonComponent btnRank = "eb943b0b-511f-46ff-80ab-8a4094c6b852"
+
+    -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
+    property any retryHandler = nil
+    property any rankHandler = nil
+
+    method void OnBeginPlay()
+        -- Hides the popup at start and wires the retry/leaderboard buttons. A @Logic OnBeginPlay runs
+        -- on BOTH server and client; on the server every UI ref is nil, so each deref is isvalid-guarded
+        -- (same timing hazard as HudController/BoardController).
+        self:Hide()
+        if isvalid(self.btnRetry) then
+            self.retryHandler = self.btnRetry.Entity:ConnectEvent(ButtonClickEvent, self.OnRetry)
+        end
+        if isvalid(self.btnRank) then
+            self.rankHandler = self.btnRank.Entity:ConnectEvent(ButtonClickEvent, self.OnRank)
+        end
+        log("[ResultController] ready")
+    end
+
+    method string ReasonText(string reason)
+        -- Maps a server rejection-reason code to Korean copy ("" for accepted runs). Covers all 6
+        -- codes ScoreService can return: ok / bad_token / timing / replay_mismatch / bad_payload / already.
+        if reason == "ok" then return ""
+        elseif reason == "bad_token" then return "세션이 만료되었어요"
+        elseif reason == "timing" then return "시간 검증 실패"
+        elseif reason == "replay_mismatch" then return "점수 검증 실패"
+        elseif reason == "bad_payload" then return "잘못된 제출 기록"
+        elseif reason == "already" then return "오늘 랭크는 이미 플레이했어요"
+        else return reason end
+    end
+
+    method void ShowResult(boolean accepted, integer finalScore, integer personalBest, string reason)
+        -- Populates and shows the result popup for a completed run.
+        if isvalid(self.title) then
+            if accepted then self.title.Text = "결과" else self.title.Text = "기록 거부" end
+        end
+        if isvalid(self.scoreLine) then self.scoreLine.Text = "점수 " .. tostring(finalScore) end
+        if isvalid(self.bestLine) then self.bestLine.Text = "최고 " .. tostring(personalBest) end
+        if isvalid(self.reasonLine) then self.reasonLine.Text = self:ReasonText(reason) end
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        log("[ResultController] show accepted=" .. tostring(accepted) .. " score=" .. tostring(finalScore))
+    end
+
+    method void ShowAlreadyPlayed(integer personalBest)
+        -- Ranked-locked variant shown when today's attempt is already consumed.
+        if isvalid(self.title) then self.title.Text = "오늘은 끝!" end
+        if isvalid(self.scoreLine) then self.scoreLine.Text = "내일 다시 도전" end
+        if isvalid(self.bestLine) then self.bestLine.Text = "최고 " .. tostring(personalBest) end
+        if isvalid(self.reasonLine) then self.reasonLine.Text = "랭크는 하루 한 판" end
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        log("[ResultController] show already-played best=" .. tostring(personalBest))
+    end
+
+    method void Hide()
+        -- Closes the popup. Guarded so the server-side OnBeginPlay call is a safe no-op.
+        if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.dimmer) then self.dimmer.Enable = false end
+    end
+
+    method void OnRetry()
+        -- Closes the popup and restarts a session in the same mode. GameSession is a map @Component
+        -- (Task 6) on the AppleGame map; resolve it nil-safely so an early/off-map click is a no-op.
+        self:Hide()
+        local mapEnt = _EntityService:GetEntityByPath("/maps/AppleGame")
+        if not isvalid(mapEnt) then return end
+        local session = mapEnt:GetComponent("script.GameSession")
+        if not isvalid(session) then return end
+        -- GameSession (Task 6) is resolved at runtime by component-type string; StartSession/mode
+        -- read off the live instance. The LSP cannot see the forward type yet -> INFO-only, no @type
+        -- cast (a cast to the not-yet-defined GameSession would be a hard 'type not found' error).
+        session:StartSession(session.mode)
+    end
+
+    method void OnRank()
+        -- Closes the popup and opens the leaderboard (LeaderboardController ships in Task 8).
+        self:Hide()
+        if _LeaderboardController ~= nil then _LeaderboardController:Open(1) end
+    end
+
+    method void OnEndPlay()
+        -- Disconnects button handlers (mirror of OnBeginPlay).
+        if self.retryHandler ~= nil and isvalid(self.btnRetry) then
+            self.btnRetry.Entity:DisconnectEvent(ButtonClickEvent, self.retryHandler)
+        end
+        if self.rankHandler ~= nil and isvalid(self.btnRank) then
+            self.btnRank.Entity:DisconnectEvent(ButtonClickEvent, self.rankHandler)
+        end
+        self.retryHandler = nil
+        self.rankHandler = nil
+    end
+
+end
