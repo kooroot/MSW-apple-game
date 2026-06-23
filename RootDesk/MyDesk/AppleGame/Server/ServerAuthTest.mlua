@@ -201,27 +201,41 @@ script ServerAuthTest extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void ClearDailyAttemptForTest(string userId, integer dateKey)
+        -- Test-only seam: resets today's ranked-attempt flag so the ranked issue + accept paths are
+        -- reachable on EVERY RunAll (the daily attempt is a one-shot-per-day resource the suite's own
+        -- earlier tests consume). Sets the canonical key to "" which RankAttemptStore treats as
+        -- "not yet consumed". Reuses AttemptKey so the key format never drifts from production.
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local key = _RankAttemptStore:AttemptKey(dateKey)
+        local err = storage:SetAndWait(key, "")
+        log("[TEST] cleared " .. key .. " err=" .. tostring(err))
+    end
+
+    @ExecSpace("ServerOnly")
     method void TestRankedSeam()
-        -- Proves a ranked accept does not crash on the missing _LeaderboardService and logs the seam warning instead.
+        -- Proves a ranked ACCEPT does not crash on the absent _LeaderboardService and logs the [SEAM]
+        -- warning instead. Clears today's ranked attempt FIRST so the accept path runs on every call
+        -- (RunAll's earlier TestSeedIssuance otherwise consumes the one-shot daily attempt, which made
+        -- this proof unreachable in-suite and dependent on a manual key reset).
         local uid = self:LocalUserId()
+        local dk = _SeedService:KstDateKey()
+        self:ClearDailyAttemptForTest(uid, dk)
+
         local r = _SeedService:IssueFor(uid, "ranked")
-        if r.alreadyPlayed == true then
-            -- Ranked attempt already consumed today (rerun); the block path is itself valid behavior.
-            self:Expect("seam_ranked_consumed_ok", r.token == nil or r.token == "")
-            log("[INFO] ranked already consumed; seam accept path not exercised this run")
-            return
-        end
+        self:Expect("seam_ranked_issued", r.alreadyPlayed == false and r.token ~= nil and r.token ~= "")
         local mv = self:FindOneValidPairOnBoard(r.seed)
         self:Expect("seam_found_valid_move", mv ~= nil)
         if mv ~= nil then
+            local pbBefore = _RankAttemptStore:GetPersonalBest(uid)
             local res = _ScoreService:SubmitFor(uid, r.token, { mv }, 2, 5.0)
             -- Accept must succeed even though _LeaderboardService is absent (guarded seam logs a warning).
             self:Expect("seam_ranked_accepts", res.accepted == true and res.reason == "ok")
             self:Expect("seam_leaderboard_absent", _LeaderboardService == nil)  -- Plan 3 not installed yet
-
-            -- Personal-best read path (backs ScoreService:RequestPersonalBest for the Single tab)
-            local pb = _RankAttemptStore:GetPersonalBest(uid)
-            self:Expect("personal_best_read_after_accept", pb >= res.finalScore)
+            -- Ranked accept reads PB read-only and must NOT alter the single-mode best (precise contract,
+            -- holds regardless of prior PB magnitude; replaces the state-fragile pb >= finalScore check).
+            local pbAfter = _RankAttemptStore:GetPersonalBest(uid)
+            self:Expect("ranked_does_not_alter_pb", pbAfter == pbBefore)
         end
     end
 
