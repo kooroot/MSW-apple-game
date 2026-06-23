@@ -53,6 +53,7 @@ script PuzzleCoreTest extends Logic
             if v < 1 or v > 9 then inRange = false end
         end
         self:Expect("maprange_within_1_9", inRange)
-        self:Expect("mix32_deterministic", _SeededRng:Mix32(42) == _SeededRng:Mix32(42))
+        self:Expect("mix32_is_next_of_normalize", _SeededRng:Mix32(42) == _SeededRng:Next(_SeededRng:Normalize(42)))
+        self:Expect("golden_next_12345", _SeededRng:Next(12345) == 3336926330)
     end
 end
