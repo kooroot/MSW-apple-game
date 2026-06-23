@@ -1,0 +1,27 @@
+@Logic
+script SeededRng extends Logic
+    method integer Normalize(integer seed)
+        -- Masks to 32 bits and avoids the all-zero fixed point of xorshift.
+        local s = seed & 0xFFFFFFFF
+        if s == 0 then s = 0x9E3779B9 end
+        return s
+    end
+
+    method integer Next(integer s)
+        -- One xorshift32 step on a 32-bit state; returns the new state (the random word).
+        s = (s ~ ((s << 13) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        s = s ~ (s >> 17)
+        s = (s ~ ((s << 5) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        return s
+    end
+
+    method integer MapRange(integer state, integer lo, integer hi)
+        -- Maps a 32-bit state into [lo, hi]; tiny modulo bias accepted for a casual game.
+        return lo + (state % (hi - lo + 1))
+    end
+
+    method integer Mix32(integer x)
+        -- Hashes an arbitrary integer (e.g. a day index) into a well-distributed 32-bit seed.
+        return self:Next(self:Normalize(x))
+    end
+end

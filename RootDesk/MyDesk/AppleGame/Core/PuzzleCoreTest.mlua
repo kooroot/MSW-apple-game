@@ -30,4 +30,29 @@ script PuzzleCoreTest extends Logic
         self:Expect("harness_true", true)
         self:Expect("harness_eq", 1 + 1 == 2)
     end
+
+    method void TestSeededRng()
+        -- Verifies seed normalization, step determinism, and range mapping bounds.
+        self:Expect("norm_zero_to_constant", _SeededRng:Normalize(0) == 0x9E3779B9)
+        self:Expect("norm_masks_32bit", _SeededRng:Normalize(0x1FFFFFFFF) == 0xFFFFFFFF)
+
+        local a1 = _SeededRng:Next(12345)
+        local a2 = _SeededRng:Next(12345)
+        self:Expect("next_is_deterministic", a1 == a2)
+        self:Expect("next_changes_state", a1 ~= 12345)
+        self:Expect("next_stays_32bit", a1 >= 0 and a1 <= 0xFFFFFFFF)
+
+        local diff = _SeededRng:Next(1) ~= _SeededRng:Next(2)
+        self:Expect("next_differs_by_seed", diff)
+
+        local inRange = true
+        local s = _SeededRng:Normalize(777)
+        for i = 1, 500 do
+            s = _SeededRng:Next(s)
+            local v = _SeededRng:MapRange(s, 1, 9)
+            if v < 1 or v > 9 then inRange = false end
+        end
+        self:Expect("maprange_within_1_9", inRange)
+        self:Expect("mix32_deterministic", _SeededRng:Mix32(42) == _SeededRng:Mix32(42))
+    end
 end
