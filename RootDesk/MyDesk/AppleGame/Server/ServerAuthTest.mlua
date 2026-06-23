@@ -199,4 +199,43 @@ script ServerAuthTest extends Logic
         local rStr = _ScoreService:SubmitFor(uid, s6.token, { strMove }, 0, 5.0)
         self:Expect("submit_nonnumeric_coord_blocked", rStr.accepted == false and rStr.reason == "bad_payload")
     end
+
+    @ExecSpace("ServerOnly")
+    method void TestRankedSeam()
+        -- Proves a ranked accept does not crash on the missing _LeaderboardService and logs the seam warning instead.
+        local uid = self:LocalUserId()
+        local r = _SeedService:IssueFor(uid, "ranked")
+        if r.alreadyPlayed == true then
+            -- Ranked attempt already consumed today (rerun); the block path is itself valid behavior.
+            self:Expect("seam_ranked_consumed_ok", r.token == nil or r.token == "")
+            log("[INFO] ranked already consumed; seam accept path not exercised this run")
+            return
+        end
+        local mv = self:FindOneValidPairOnBoard(r.seed)
+        self:Expect("seam_found_valid_move", mv ~= nil)
+        if mv ~= nil then
+            local res = _ScoreService:SubmitFor(uid, r.token, { mv }, 2, 5.0)
+            -- Accept must succeed even though _LeaderboardService is absent (guarded seam logs a warning).
+            self:Expect("seam_ranked_accepts", res.accepted == true and res.reason == "ok")
+            self:Expect("seam_leaderboard_absent", _LeaderboardService == nil)  -- Plan 3 not installed yet
+
+            -- Personal-best read path (backs ScoreService:RequestPersonalBest for the Single tab)
+            local pb = _RankAttemptStore:GetPersonalBest(uid)
+            self:Expect("personal_best_read_after_accept", pb >= res.finalScore)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void RunAll()
+        -- One-call full suite for the MSW test loop (server context).
+        self:Reset()
+        self:TestHarness()
+        self:TestRankAttemptStore()
+        self:TestPersonalBest()
+        self:TestSeedDateKey()
+        self:TestSeedIssuance()
+        self:TestSubmitValidation()
+        self:TestRankedSeam()
+        self:Summary()
+    end
 end
