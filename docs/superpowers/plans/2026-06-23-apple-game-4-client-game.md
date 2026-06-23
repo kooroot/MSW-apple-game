@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the entire playable client of the apple game — host map `map/AppleGame.map`, a UI-rendered 17×10 board with drag-rectangle selection, HUD (score / 120s timer bar / mode), Result popup, and a 3-tab Leaderboard popup — wiring it to the already-shipped `_SeedService` / `_ScoreService` / `_LeaderboardService` (Plans 2–3) and `_PuzzleCore` / `_SeededRng` (Plan 1).
+**Goal:** Build the entire playable client of the apple game — host map `map/AppleGame.map`, a UI-rendered 17×10 board with drag-rectangle selection, HUD (score / 120s timer bar / mode), Result popup, and a 5-tab Leaderboard popup (Day/Week/AllTime ranking + Single personal-best + locked Multi) — wiring it to the already-shipped `_SeedService` / `_ScoreService` / `_LeaderboardService` (Plans 2–3) and `_PuzzleCore` / `_SeededRng` (Plan 1).
 
 **Architecture:** Gameplay is **100% UI-driven** — the board is a UI grid of cell entities under `ui/AppleGame/AppleBoard.ui`, not world entities, so there is no physics/movement. A thin host map (`map/AppleGame.map`, **RectTile / TileMapMode=1**, no gravity) carries one map-scoped `@Component` (`GameSession`) that owns a play session: on map enter it requests a seed, generates the board via the shared `_PuzzleCore`, renders it, runs a 120s timer, records the `moves` log, and submits on timeout. Drag selection comes from a full-screen `UITouchReceiveComponent` panel layered over the grid (GATE D: `UITouchDownEvent`→anchor, `UITouchDragEvent`→current corner, `UITouchUpEvent`→finalize), with `_UILogic:ScreenToLocalUIPosition(TouchPoint, gridTransform)` ÷ cell size mapping screen→cell. All UI/input is `@ExecSpace("ClientOnly")`; all server calls go through the Plan 2/3 RPCs.
 
@@ -1153,25 +1153,26 @@ EOF
 
 ---
 
-### Task 8: Leaderboard popup (3 tabs) + LeaderboardController
+### Task 8: Leaderboard popup (5 tabs) + LeaderboardController
 
-A modal leaderboard with three tabs — Day / Week / AllTime — each rendering up to 20 entries from `_LeaderboardService`, the player's own rank/score line, and a fixed "갱신 주기 약 30분" stale label. Also adds the title/start affordance so the whole flow (start → play → result → ranking) is reachable.
+A modal leaderboard with five tabs — 일간(Day) / 주간(Week) / 올타임(AllTime) / 싱글(Single) / 멀티(Multi). Day/Week/AllTime each render up to 20 entries from `_LeaderboardService` + the player's own rank/score line + a fixed "갱신 주기 약 30분" stale label. **싱글** shows the player's single-mode personal best (one line, fetched via `_ScoreService:RequestPersonalBest`), no list, no stale label. **멀티** is a locked placeholder for Phase 2 — a lock icon + "준비 중" text, no data call. Also adds the title/start affordance so the whole flow (start → play → result → ranking) is reachable.
 
 **Files:**
 - Create (via UIBuilder): `ui/AppleGame/AppleLeaderboard.ui`
 - Create: `RootDesk/MyDesk/AppleGame/Client/LeaderboardController.mlua`
 
 **Interfaces:**
-- Consumes: `_LeaderboardService:RequestLeaderboard(integer boardId, integer pageNo)`; `_LeaderboardService.ReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)` (entries = `{rank, name, score}` array); `_GameSession:StartSession`; board ids `BOARD_DAY=1`, `BOARD_WEEK=2`, `BOARD_ALLTIME=3`; `PAGE_SIZE=20`.
+- Consumes: `_LeaderboardService:RequestLeaderboard(integer boardId, integer pageNo)`; `_LeaderboardService.ReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)` (entries = `{rank, name, score}` array); `_ScoreService:RequestPersonalBest()` (for the Single tab); `_ScoreService.ReceivePersonalBest(integer personalBest)` (server→client, same delivery mechanism as Task 6/7); `_GameSession:StartSession`; board ids `BOARD_DAY=1`, `BOARD_WEEK=2`, `BOARD_ALLTIME=3`; client-only UI sentinels `BOARD_SINGLE=4`, `BOARD_MULTI=5` (never passed to `RequestLeaderboard`); `PAGE_SIZE=20`.
 - Produces: `_LeaderboardController` `@Logic` (ClientOnly) with:
   - `method void Open(integer boardId)` — shows the popup and requests that board.
   - `method void Hide()`.
   - `method void OnReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)` — renders the rows + my-rank line.
-  - `method void SelectTab(integer boardId)`.
+  - `method void SelectTab(integer boardId)` — handles boardId 1–5; 1/2/3 = ranking list, 4 = Single personal-best, 5 = locked Multi placeholder.
+  - `method void OnReceivePersonalBest(integer personalBest)` — renders the Single tab's one-line personal-best display.
 
-- [ ] **Step 1: Build the leaderboard .ui (3 tabs + 20-row list)**
+- [ ] **Step 1: Build the leaderboard .ui (5 tabs + 20-row list + single-line PB panel + locked panel)**
 
-Read builder-protocol §3. Use a `scrollLayout` (≤20 rows, vertical) per component-api guidance (GridView is for 100+). Three tab buttons across the top, a content list, a my-rank footer, and the stale label.
+Read builder-protocol §3. Use a `scrollLayout` (≤20 rows, vertical) per component-api guidance (GridView is for 100+). Five tab buttons across the top, a content list, a my-rank footer, and the stale label. The Single tab reuses its own content panel (SinglePB); the Multi tab shows a locked panel (MultiLocked); both are `enable:false` by default.
 
 ```javascript
 const { UIBuilder } = require("<ABS path>/msw-ui-system/scripts/msw_ui_builder.cjs");
@@ -1181,10 +1182,12 @@ b.sprite("Dimmer", { anchor: "stretch", pos: [0, 0], color: "#000000", alpha: 0.
 b.sprite("Panel", { anchor: "middle-center", pos: [0, 0], rect_size: [900, 980], color: "#161B28", raycast: true });
 b.text("Panel/Title", "랭킹", { anchor: "top-center", pos: [0, -44], rect_size: [600, 70], size: 48, alignment: 4, color: "#FFFFFF", bold: true });
 
-// Tabs
-b.button("Panel/TabDay", "일간", { anchor: "top-center", pos: [-270, -130], rect_size: [240, 84], font_size: 32, color: "#FFFFFF" });
-b.button("Panel/TabWeek", "주간", { anchor: "top-center", pos: [0, -130], rect_size: [240, 84], font_size: 32, color: "#FFFFFF" });
-b.button("Panel/TabAll", "올타임", { anchor: "top-center", pos: [270, -130], rect_size: [240, 84], font_size: 32, color: "#FFFFFF" });
+// Tabs (5, centered across the top)
+b.button("Panel/TabDay",    "일간",  { anchor: "top-center", pos: [-440, -130], rect_size: [200, 78], font_size: 26, color: "#FFFFFF" });
+b.button("Panel/TabWeek",   "주간",  { anchor: "top-center", pos: [-220, -130], rect_size: [200, 78], font_size: 26, color: "#FFFFFF" });
+b.button("Panel/TabAll",    "올타임", { anchor: "top-center", pos: [0,    -130], rect_size: [200, 78], font_size: 26, color: "#FFFFFF" });
+b.button("Panel/TabSingle", "싱글",  { anchor: "top-center", pos: [220,  -130], rect_size: [200, 78], font_size: 26, color: "#FFFFFF" });
+b.button("Panel/TabMulti",  "멀티",  { anchor: "top-center", pos: [440,  -130], rect_size: [200, 78], font_size: 26, color: "#FFFFFF" });
 
 // Scrollable row list + a single hidden row template cloned at runtime
 b.scrollLayout("Panel/List", { layout_type: 1, spacing: 6, cell_size: [820, 70], use_scroll: true, anchor: "middle-center", pos: [0, -10], rect_size: [840, 560] });
@@ -1199,10 +1202,18 @@ b.text("Panel/Stale", "갱신 주기 약 30분", { anchor: "bottom-center", pos:
 b.button("Panel/BtnClose", "닫기", { anchor: "bottom-center", pos: [0, 40], rect_size: [300, 90], font_size: 34, color: "#FFFFFF" });
 b.patchComponent("Panel/BtnClose", "MOD.Core.SpriteGUIRendererComponent", { Color: { r: 0.30, g: 0.34, b: 0.42, a: 1 } });
 
+// Single-tab personal-best panel (hidden by default; shown only when Tab 4 is active)
+b.text("Panel/SinglePB", "내 최고 점수: -", { anchor: "center", pos: [0, 0], font_size: 40, color: "#FFE680" });
+b.setEnable("Panel/SinglePB", false);
+
+// Multi-tab locked placeholder (hidden by default; shown only when Tab 5 is active)
+b.text("Panel/MultiLocked", "🔒 준비 중 (Phase 2)", { anchor: "center", pos: [0, 0], font_size: 40, color: "#AAAAAA" });
+b.setEnable("Panel/MultiLocked", false);
+
 b.script("LbCtl", "script.LeaderboardController", { anchor: "stretch", pos: [0, 0], rect_size: [1920, 1080] });
 
 b.write("ui/AppleGame/AppleLeaderboard.ui");
-console.log("lb ids:", b.getId("Panel/List"), b.getId("Panel/List/RowTemplate"), b.getId("Panel/MyRank"));
+console.log("lb ids:", b.getId("Panel/List"), b.getId("Panel/List/RowTemplate"), b.getId("Panel/MyRank"), b.getId("Panel/SinglePB"), b.getId("Panel/MultiLocked"));
 ```
 
 - [ ] **Step 2: Write LeaderboardController**
@@ -1217,6 +1228,9 @@ script LeaderboardController extends Logic
     property integer BOARD_DAY = 1
     property integer BOARD_WEEK = 2
     property integer BOARD_ALLTIME = 3
+    -- BOARD_SINGLE=4 and BOARD_MULTI=5 are client-only UI sentinels; never passed to RequestLeaderboard.
+    property integer BOARD_SINGLE = 4
+    property integer BOARD_MULTI = 5
     property integer PAGE_SIZE = 20
 
     property Entity panel = "uuid-panel"
@@ -1224,21 +1238,27 @@ script LeaderboardController extends Logic
     property Entity listRoot = "uuid-list"
     property Entity rowTemplate = "uuid-row"
     property TextComponent myRank = "uuid-myrank"
+    property TextComponent singlePB = "uuid-singlepb"
+    property Entity multiLocked = "uuid-multilocked"
     property ButtonComponent tabDay = "uuid-tabday"
     property ButtonComponent tabWeek = "uuid-tabweek"
     property ButtonComponent tabAll = "uuid-taball"
+    property ButtonComponent tabSingle = "uuid-tabsingle"
+    property ButtonComponent tabMulti = "uuid-tabmulti"
     property ButtonComponent btnClose = "uuid-close"
 
     method void OnBeginPlay()
-        -- Hides the popup, hides the row template, and wires tab + close buttons.
+        -- Hides the popup, hides the row template, and wires all 5 tab + close buttons.
         self.rows = {}
-        self.currentBoard = self.BOARD_DAY
+        self.currentTab = self.BOARD_DAY
         if isvalid(self.rowTemplate) then self.rowTemplate:SetEnable(false) end
         self:Hide()
-        self.dayHandler = self.tabDay.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_DAY) end)
-        self.weekHandler = self.tabWeek.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_WEEK) end)
-        self.allHandler = self.tabAll.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_ALLTIME) end)
-        self.closeHandler = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, self.Hide)
+        self.dayHandler    = self.tabDay.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_DAY) end)
+        self.weekHandler   = self.tabWeek.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_WEEK) end)
+        self.allHandler    = self.tabAll.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_ALLTIME) end)
+        self.singleHandler = self.tabSingle.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_SINGLE) end)
+        self.multiHandler  = self.tabMulti.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_MULTI) end)
+        self.closeHandler  = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, self.Hide)
         log("[LeaderboardController] ready")
     end
 
@@ -1249,11 +1269,51 @@ script LeaderboardController extends Logic
         self:SelectTab(boardId)
     end
 
+    method void ShowRankingPanel(boolean show)
+        -- Toggles the ranking list + footer elements.
+        if isvalid(self.listRoot) then self.listRoot:SetEnable(show) end
+        if isvalid(self.myRank) then self.myRank.Entity:SetEnable(show) end
+    end
+
+    method void ShowSinglePanel(boolean show)
+        -- Toggles the Single-tab personal-best label.
+        if isvalid(self.singlePB) then self.singlePB.Entity:SetEnable(show) end
+    end
+
+    method void ShowMultiPanel(boolean show)
+        -- Toggles the Multi-tab locked placeholder.
+        if isvalid(self.multiLocked) then self.multiLocked:SetEnable(show) end
+    end
+
     method void SelectTab(integer boardId)
-        -- Switches the active board and requests its data.
-        self.currentBoard = boardId
-        _LeaderboardService:RequestLeaderboard(boardId, 1)
-        log("[LeaderboardController] request board=" .. boardId)
+        -- 1/2/3 = ranking boards (list); 4 = single personal-best; 5 = locked Multi placeholder.
+        self.currentTab = boardId
+        if boardId >= 1 and boardId <= 3 then
+            self:ShowRankingPanel(true)
+            self:ShowSinglePanel(false)
+            self:ShowMultiPanel(false)
+            _LeaderboardService:RequestLeaderboard(boardId, 1)
+        elseif boardId == 4 then
+            self:ShowRankingPanel(false)
+            self:ShowSinglePanel(true)
+            self:ShowMultiPanel(false)
+            _ScoreService:RequestPersonalBest()
+        else -- 5: Multi, locked
+            self:ShowRankingPanel(false)
+            self:ShowSinglePanel(false)
+            self:ShowMultiPanel(true)
+        end
+        log("[LeaderboardController] SelectTab board=" .. boardId)
+    end
+
+    method void OnReceivePersonalBest(integer personalBest)
+        -- Fills the Single tab's one-line personal-best display.
+        -- (read the SinglePB text entity by name and set its Text; mirror how OnReceiveLeaderboard
+        --  resolves its row entities in this same controller)
+        if isvalid(self.singlePB) then
+            self.singlePB.Text = "내 최고 점수: " .. tostring(personalBest)
+        end
+        log("[LB] OnReceivePersonalBest=" .. personalBest)
     end
 
     method void ClearRows()
@@ -1266,7 +1326,7 @@ script LeaderboardController extends Logic
 
     method void OnReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)
         -- Renders the entries for the active board; ignores replies for a stale tab switch.
-        if boardId ~= self.currentBoard then return end
+        if boardId ~= self.currentTab then return end
         self:ClearRows()
         for i = 1, #entries do
             local e = entries[i]
@@ -1293,10 +1353,12 @@ script LeaderboardController extends Logic
 
     method void OnEndPlay()
         -- Disconnects all button handlers and clears cloned rows.
-        if self.dayHandler then self.tabDay.Entity:DisconnectEvent(ButtonClickEvent, self.dayHandler) end
-        if self.weekHandler then self.tabWeek.Entity:DisconnectEvent(ButtonClickEvent, self.weekHandler) end
-        if self.allHandler then self.tabAll.Entity:DisconnectEvent(ButtonClickEvent, self.allHandler) end
-        if self.closeHandler then self.btnClose.Entity:DisconnectEvent(ButtonClickEvent, self.closeHandler) end
+        if self.dayHandler    then self.tabDay.Entity:DisconnectEvent(ButtonClickEvent, self.dayHandler) end
+        if self.weekHandler   then self.tabWeek.Entity:DisconnectEvent(ButtonClickEvent, self.weekHandler) end
+        if self.allHandler    then self.tabAll.Entity:DisconnectEvent(ButtonClickEvent, self.allHandler) end
+        if self.singleHandler then self.tabSingle.Entity:DisconnectEvent(ButtonClickEvent, self.singleHandler) end
+        if self.multiHandler  then self.tabMulti.Entity:DisconnectEvent(ButtonClickEvent, self.multiHandler) end
+        if self.closeHandler  then self.btnClose.Entity:DisconnectEvent(ButtonClickEvent, self.closeHandler) end
         self:ClearRows()
     end
 
@@ -1316,7 +1378,9 @@ UIBuilder.load("ui/AppleGame/AppleLeaderboard.ui").write("ui/AppleGame/AppleLead
       panel: "Panel", dimmer: "Dimmer",
       listRoot: "Panel/List", rowTemplate: "Panel/List/RowTemplate",
       myRank: "Panel/MyRank",
+      singlePB: "Panel/SinglePB", multiLocked: "Panel/MultiLocked",
       tabDay: "Panel/TabDay", tabWeek: "Panel/TabWeek", tabAll: "Panel/TabAll",
+      tabSingle: "Panel/TabSingle", tabMulti: "Panel/TabMulti",
       btnClose: "Panel/BtnClose",
     },
   },
@@ -1329,7 +1393,7 @@ UIBuilder.load("ui/AppleGame/AppleLeaderboard.ui").write("ui/AppleGame/AppleLead
 ```
 maker_execute_script("_LeaderboardController:Open(1) _LeaderboardController:OnReceiveLeaderboard(1, { {rank=1,name='Alice',score=88}, {rank=2,name='Bob',score=72}, {rank=3,name='Me',score=60} }, 3, 60, true)", context="client")
 ```
-`maker_logs(kind="normal")` — expect `rendered board=1 rows=3 stale=true`. `maker_screenshot` — confirm 3 ranked rows, "내 순위 3위 (60점)", and the "갱신 주기 약 30분" label. Drive the "주간" tab via `maker_mouse_input` → `maker_logs` shows `request board=2`. `maker_stop`.
+`maker_logs(kind="normal")` — expect `rendered board=1 rows=3 stale=true`. `maker_screenshot` — confirm 3 ranked rows, "내 순위 3위 (60점)", and the "갱신 주기 약 30분" label. Drive the "주간" tab via `maker_mouse_input` → `maker_logs` shows `SelectTab board=2`. Drive the "싱글" tab → logs show `SelectTab board=4` and the SinglePB panel visible. Drive the "멀티" tab → logs show `SelectTab board=5` and the MultiLocked panel visible (lock + "준비 중"). Inject a mock personal-best: `maker_execute_script("_LeaderboardController:OnReceivePersonalBest(42)", context="client")` → screenshot confirms "내 최고 점수: 42". `maker_stop`.
 
 - [ ] **Step 5: Commit**
 
@@ -1337,7 +1401,7 @@ maker_execute_script("_LeaderboardController:Open(1) _LeaderboardController:OnRe
 git add ui/AppleGame/AppleLeaderboard.ui RootDesk/MyDesk/AppleGame/Client/LeaderboardController.mlua
 git diff --cached | grep -iE 'df285f|bearer [a-z0-9]'   # must print nothing
 git commit -F- <<'EOF'
-feat(applegame): Leaderboard popup (Day/Week/AllTime tabs, 20 rows, stale label) + controller
+feat(applegame): Leaderboard popup (5-tab: Day/Week/AllTime/Single PB/locked Multi) + controller
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_0169R85bG8nYYQ3CuapDpDB5
@@ -1406,16 +1470,16 @@ EOF
 - §10 client side (on map enter → RequestSeed; ReceiveSeed → GenerateBoard → render → 120s timer → record moves; ApplyMove local feedback; on timeout SubmitRun; ReceiveSubmitResult → result) → Task 6 (GameSession) + Task 5 (ApplyMove on release) + Task 7 (result).
 - §11 mobile UI/input (1920×1080 landscape, 92px cells, board 1564×920 centered, safe area, touch→cell formula, UI touch receiver press/move/release, selection overlay + live sum) → Task 4 (layout/overlay) + Task 5 (touch→cell, drag) — both cite the exact formula and GATE D.
 - §14 (file structure `AppleGame/Client`, `Data`, `ui/AppleGame/`, `map/AppleGame.map`; no catch-all) → enforced in Global Constraints + every task's Files block.
-- Interface contract Plan 4 (RequestSeed/ReceiveSeed, SubmitRun/ReceiveSubmitResult, RequestLeaderboard/ReceiveLeaderboard, board ids 1/2/3, PAGE_SIZE 20, stale label) → Tasks 6/7/8 Interfaces blocks copy the signatures verbatim.
+- Interface contract Plan 4 (RequestSeed/ReceiveSeed, SubmitRun/ReceiveSubmitResult, RequestLeaderboard/ReceiveLeaderboard, RequestPersonalBest/ReceivePersonalBest, board ids 1/2/3, UI sentinels BOARD_SINGLE=4/BOARD_MULTI=5, PAGE_SIZE 20, stale label) → Tasks 6/7/8 Interfaces blocks copy the signatures verbatim.
 - GATE D (UITouch event names + payloads, ScreenToLocalUIPosition, TouchId -1/1 gate, live items: PC drag threshold / RaycastTarget / Down-anchor) → Task 5 implements + live-confirms all four.
-- Leaderboard 3 tabs Day/Week/AllTime + "갱신 주기 약 30분" → Task 8.
+- Leaderboard 5 tabs Day/Week/AllTime + Single personal-best (via `_ScoreService:RequestPersonalBest`) + locked Multi placeholder + "갱신 주기 약 30분" → Task 8.
 - Resourcing (Maple sprites/SFX via msw-search) → Task 2 + Task 9 Step 2 SFX pass.
 - Correctly out of this plan: server authority/replay (Plan 2), ranking package install/fan-out (Plan 3), PuzzleCore/SeededRng (Plan 1) — all consumed, not built.
-- **Deliberately narrowed vs spec §3:** the full spec leaderboard has 5 tabs — ranked Day/Week/AllTime **plus** a Single personal-best tab and a locked "준비중" Multi tab. The user's Plan 4 scope explicitly said "Leaderboard popup (3 tabs Day/Week/AllTime)", so this plan builds only those three. The Single (personal-best from `_ScoreService` UserDataStorage) and locked-Multi tabs are flagged as a scope decision below, not silently dropped.
+- **Spec §3 5-tab requirement: fully met.** Day/Week/AllTime render ranking data from `_LeaderboardService`; Single shows the player's personal best via the new `_ScoreService:RequestPersonalBest` RPC; Multi is a locked static Phase-2 placeholder. `BOARD_SINGLE=4` and `BOARD_MULTI=5` are client-only UI sentinels never passed to `RequestLeaderboard`.
 
 **2. Placeholder scan:** No "TBD"/"add error handling"/"similar to Task N" placeholders. Intentional, named fill-ins each carry explicit instructions and a verification step: (a) the `"<ABS path to>"` UIBuilder require path — the worker resolves the sibling `msw-ui-system/scripts/msw_ui_builder.cjs` absolute path once (builder-protocol §0/§3 routing); (b) AssetCatalog RUIDs filled from msw-search (Task 2, with placeholder fallback so nothing is invisible); (c) the golden-board-style icon RUID DataRef wrapper confirmed against a live UI sprite (Task 4 Step 4); (d) the server→client delivery bridge shape, deliberately deferred to Task 6 Step 1 because it depends on the shipped SeedService/ScoreService code (msw-scripting §1.3 no-guess); (e) `_SoundService:PlaySound` arity confirmed against its `.d.mlua` before use. The `"uuid-..."` property defaults are real placeholders by design — overwritten by the `write({bind})` injection step in each UI task.
 
-**3. Type consistency:** `RenderBoard(grid)` / `ApplyMove(grid,rect)` / `Replay(seed,moves)` use the Plan 1 shapes (`grid[r][c]` 0-indexed, `rect={c1,r1,c2,r2}`, `moves` array of `{rect,t}`). `RequestSeed(mode:string)` / `OnReceiveSeed(mode,seed,token,dateKey,alreadyPlayed,personalBest)` / `SubmitRun(token,moves,claimedScore,clientElapsed)` / `ReceiveSubmitResult(accepted,finalScore,personalBest,reason)` / `RequestLeaderboard(boardId,pageNo)` / `ReceiveLeaderboard(boardId,entries,myRank,myScore,stale)` match the interface contract exactly (param names and order). Board ids `BOARD_DAY=1/BOARD_WEEK=2/BOARD_ALLTIME=3` and `PAGE_SIZE=20` match the contract. `entries` element shape `{rank,name,score}` is consistent between the contract, LeaderboardController render, and the `.ui` row template. `_HudController` methods (`SetMode/SetScore/SetTimeRatio/SetTimeText`) and `_BoardController` methods (`RenderBoard/SetCellValue/GridTransform/ShowSelection/HideSelection/LocalToCell/ScreenToCell/BindInput/UnbindInput`) are named identically at definition (Tasks 3/4/5) and call sites (Task 6). `mode` is a string everywhere; `@ExecSpace("ClientOnly")` on every UI script.
+**3. Type consistency:** `RenderBoard(grid)` / `ApplyMove(grid,rect)` / `Replay(seed,moves)` use the Plan 1 shapes (`grid[r][c]` 0-indexed, `rect={c1,r1,c2,r2}`, `moves` array of `{rect,t}`). `RequestSeed(mode:string)` / `OnReceiveSeed(mode,seed,token,dateKey,alreadyPlayed,personalBest)` / `SubmitRun(token,moves,claimedScore,clientElapsed)` / `ReceiveSubmitResult(accepted,finalScore,personalBest,reason)` / `RequestLeaderboard(boardId,pageNo)` / `ReceiveLeaderboard(boardId,entries,myRank,myScore,stale)` match the interface contract exactly (param names and order). Board ids `BOARD_DAY=1/BOARD_WEEK=2/BOARD_ALLTIME=3` and UI sentinels `BOARD_SINGLE=4/BOARD_MULTI=5` and `PAGE_SIZE=20` match the contract. `entries` element shape `{rank,name,score}` is consistent between the contract, LeaderboardController render, and the `.ui` row template. `OnReceivePersonalBest(integer personalBest)` matches the `_ScoreService:ReceivePersonalBest` delivery surface. `_HudController` methods (`SetMode/SetScore/SetTimeRatio/SetTimeText`) and `_BoardController` methods (`RenderBoard/SetCellValue/GridTransform/ShowSelection/HideSelection/LocalToCell/ScreenToCell/BindInput/UnbindInput`) are named identically at definition (Tasks 3/4/5) and call sites (Task 6). `mode` is a string everywhere; `@ExecSpace("ClientOnly")` on every UI script.
 
 ## Open Questions / Risks (resolve during execution)
 
@@ -1426,4 +1490,4 @@ EOF
 - **Icon ImageRUID wrapper:** `SpriteGUIRendererComponent.ImageRUID` is a `DataRef` (`{DataId=...}`), not a plain string — runtime wrapper confirmed against a live UI sprite in Task 4 before icons go in (number-text fallback keeps Task 4 verifiable meanwhile).
 - **`maker_execute_script` form/context:** confirm the multi-statement + `context="client"` form works early (as Plan 1 did); if not, wrap in `RunX()` harness methods.
 - **Screen orientation (landscape vs portrait):** spec §16 fixes landscape 1920×1080 as the default but leaves portrait-fit (cell shrinks to ~63px) as an open mockup-stage decision. This plan hard-codes landscape (92px cells). If the user later wants portrait, Task 4's cell math, board rect, and HUD layout all change — confirm orientation before Task 3/4 build out the `.ui`.
-- **Leaderboard tab count (3 vs 5):** per the spec-coverage note, the full spec has 5 tabs (ranked ×3 + Single personal-best + locked Multi). Plan 4 builds the 3 ranked tabs per the user's explicit scope. If the Single tab is wanted, it needs a `_ScoreService` personal-best read path (UserDataStorage, server→client) not in the current Plan 4 contract; the locked Multi tab is trivial static UI. Confirm whether to extend Task 8 before execution.
+- **Leaderboard tab count:** resolved — Task 8 builds the full 5-tab popup. Day/Week/AllTime render ranking data; Single shows the personal best via `_ScoreService:RequestPersonalBest`; Multi is a locked static Phase-2 placeholder. No open question remains on tab count.

@@ -598,7 +598,7 @@ EOF
 
 ### Task 4: `_ScoreService` — token + time-window + payload validation + replay-trusted scoring
 
-Validates and records a completed run. Consumes the `_SeedService` session record. Validation order (reject on first failure, all rejections logged): (1) token exists and belongs to `senderUserId`; (2) token not yet consumed → mark consumed; (3) server-elapsed-since-issuance AND `clientElapsed` both within the 120s window + slack; (4) payload shape sane (move count cap, coordinate ranges, monotonic non-decreasing timestamps within window); (5) `_PuzzleCore:Replay(session.seed, moves)` and accept iff `r.ok and r.score == claimedScore`. On accept: update `personalBest` (keep-max) and, for `mode=="ranked"`, the **guarded** `_LeaderboardService:SubmitScore` (cross-plan seam). Reply via Client RPC.
+Validates and records a completed run. Consumes the `_SeedService` session record. Validation order (reject on first failure, all rejections logged): (1) token exists and belongs to `senderUserId`; (2) token not yet consumed → mark consumed; (3) server-elapsed-since-issuance AND `clientElapsed` both within the 120s window + slack; (4) payload shape sane (move count cap, coordinate ranges, monotonic non-decreasing timestamps within window); (5) `_PuzzleCore:Replay(session.seed, moves)` and accept iff `r.ok and r.score == claimedScore`. On accept: update `personalBest` (keep-max) and, for `mode=="ranked"`, the **guarded** `_LeaderboardService:SubmitScore` (cross-plan seam). Reply via Client RPC. Also exposes `RequestPersonalBest` / `ReceivePersonalBest` for the Leaderboard "Single" tab (read-only, independent of the play flow).
 
 **Files:**
 - Create: `RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua`
@@ -612,6 +612,8 @@ Validates and records a completed run. Consumes the `_SeedService` session recor
   - `SubmitFor(string userId, string token, table moves, integer claimedScore, number clientElapsed) -> table` — ServerOnly; full validation + replay; returns `{ accepted, finalScore, personalBest, reason }`. `reason ∈ "ok"|"bad_token"|"timing"|"replay_mismatch"|"already"|"bad_payload"`.
   - `SubmitRun(string token, table moves, integer claimedScore, number clientElapsed)` — `@ExecSpace("Server")`; thin wrapper over `SubmitFor(senderUserId, ...)`; replies via `ReceiveSubmitResult`.
   - `ReceiveSubmitResult(boolean accepted, integer finalScore, integer personalBest, string reason)` — `@ExecSpace("Client")`.
+  - `@ExecSpace("Server") method void RequestPersonalBest()` — reads `_RankAttemptStore:GetPersonalBest(senderUserId)`, replies via `ReceivePersonalBest`. Read-only, no token, idempotent (safe to call whenever the Single tab opens).
+  - `@ExecSpace("Client") method void ReceivePersonalBest(integer personalBest)` — server→caller (`targetUserId` appended at call site, not declared); body bridges to the client (`_LeaderboardController:OnReceivePersonalBest`) via the same delivery mechanism chosen for `ReceiveSubmitResult` in Plan 4 Task 6 Step 1.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -799,11 +801,36 @@ end
 
 > `SubmitRun` is `@ExecSpace("Server")` so `senderUserId` is unforgeable. The single-use guarantee is enforced server-side via `session.consumed` flipped through `_SeedService:MarkConsumed` before replay, so a duplicate submit short-circuits at step (2). The window check uses **server** elapsed (`DateTime.UtcNow - session.issuedAt`) as authoritative; `clientElapsed` is only an additional sanity bound (spec §10, §12). The ranked leaderboard call is the **cross-plan seam** — keep the guard.
 
-- [ ] **Step 4: Run, expecting PASS**
+- [ ] **Step 4: Add the personal-best read RPC (Single-tab support)**
+
+> The Leaderboard "Single" tab needs the player's stored single-mode best on demand, independent of the play flow. Add a thin read RPC. It reuses `_RankAttemptStore:GetPersonalBest` (already built + tested in Task 2), so no new storage logic.
+
+Add to `ScoreService.mlua`, inside the `script` block, after `ReceiveSubmitResult`:
+
+```lua
+    @ExecSpace("Server")
+    method void RequestPersonalBest()
+        -- Client→server: fetch this player's single-mode personal best for the Leaderboard "Single" tab.
+        local uid = senderUserId
+        local best = _RankAttemptStore:GetPersonalBest(uid)
+        self:ReceivePersonalBest(best, uid)   -- targetUserId appended at call site
+    end
+
+    @ExecSpace("Client")
+    method void ReceivePersonalBest(integer personalBest)
+        -- Server→caller: deliver the single-mode personal best to this client.
+        -- Bridge to the client controller the same way ReceiveSubmitResult is delivered
+        -- (Plan 4 Task 6 Step 1 delivery decision — e.g. fire a PersonalBestEvent the
+        -- LeaderboardController listens for, or call _LeaderboardController:OnReceivePersonalBest).
+        log("[SCORE] ReceivePersonalBest personalBest=" .. personalBest)
+    end
+```
+
+- [ ] **Step 5: Run, expecting PASS**
 
 Run the MSW Test Loop (Step 2 snippet). Expected all `TestSubmitValidation` assertions PASS, `failed=0`. Inspect the `[SCORE]` log lines: confirm one `accept ... score=2`, the rejections each log their reason, and (because the test uses **single** mode) the `[SEAM]` warning does **not** fire (ranked-only). Confirm zero LSP errors on `ScoreService.mlua`. Then `maker_stop`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add RootDesk/MyDesk/AppleGame/Server/ScoreService.mlua RootDesk/MyDesk/AppleGame/Server/ServerAuthTest.mlua
@@ -852,6 +879,10 @@ Add to `ServerAuthTest.mlua`:
             -- Accept must succeed even though _LeaderboardService is absent (guarded seam logs a warning).
             self:Expect("seam_ranked_accepts", res.accepted == true and res.reason == "ok")
             self:Expect("seam_leaderboard_absent", _LeaderboardService == nil)  -- Plan 3 not installed yet
+
+            -- Personal-best read path (backs ScoreService:RequestPersonalBest for the Single tab)
+            local pb = _RankAttemptStore:GetPersonalBest(uid)
+            self:Expect("personal_best_read_after_accept", pb >= res.finalScore)
         end
     end
 
@@ -947,13 +978,13 @@ Produce the §17.3 test-result report (Scenario / Env / Steps / Result / Evidenc
 - §12 payload validation (move-count cap, coord ranges, monotonic timestamps, window, replay-score equality) → Task 4 (`ValidatePayload` + replay; `submit_bad_coord`/`timing`/`score_lie`).
 - §13 anti-cheat model (replay-trusted scoring, persistent attempt, time window) → Tasks 2–4 collectively.
 - GATE A server time API (`DateTime.UtcNow + TimeSpan(9,0,0)`) → Task 3, verified signatures section. GATE B DataStorage (`GetUserDataStorage`/`GetAndWait`/`SetAndWait`/`UpdateAndWait`) → Task 2, verified signatures section; CAS-mismatch-code gap captured in Task 2 Step 4 + Task 6.
-- Interface contract "Plan 2 produces": `_SeedService` (`RequestSeed`/`ReceiveSeed` exact params), `_ScoreService` (`SubmitRun`/`ReceiveSubmitResult` exact params + reason enum), `_RankAttemptStore` (`TryConsumeDaily`/`GetPersonalBest`/`SetPersonalBestIfHigher`) → all match Tasks 2–4 verbatim. Cross-plan seam (`_LeaderboardService:SubmitScore` guarded) → dedicated section + Task 4 + Task 5 verification.
+- Interface contract "Plan 2 produces": `_SeedService` (`RequestSeed`/`ReceiveSeed` exact params), `_ScoreService` (`SubmitRun`/`ReceiveSubmitResult`/`RequestPersonalBest`/`ReceivePersonalBest` exact params + reason enum), `_RankAttemptStore` (`TryConsumeDaily`/`GetPersonalBest`/`SetPersonalBestIfHigher`) → all match Tasks 2–4 verbatim. Cross-plan seam (`_LeaderboardService:SubmitScore` guarded) → dedicated section + Task 4 + Task 5 verification.
 - ServerOnly integration test harness analogous to Plan 1's `PuzzleCoreTest` → `ServerAuthTest` (Tasks 1–5). MSW Maker-loop verification (no pytest) with `context="server"`, build-clean gate, `maker_get_current_map` poll, `maker_clear_logs` → "The MSW Test Loop" + every task Step 2/4. DataStorage no-loop discipline in tests → noted in test-loop callout and observed in test design. Final Verify task → Task 6.
 - Out of this plan (correctly): ranking package install + `_LeaderboardService` (Plan 3); all UI/input/client `GameSession` (Plan 4).
 
 **2. Placeholder scan:** No `TBD`/`TODO`/"add error handling"/"similar to Task N". The only intentionally-captured-at-runtime value is the undocumented CAS-mismatch errCode (Task 2 Step 4) — a live-observation gap explicitly flagged by GATE B, logged not hard-coded, not a deferred TODO. All methods have full bodies; reason strings are concrete.
 
-**3. Type consistency:** Names match across tasks and the interface contract — `_SeedService` (`KstDateKey`, `IssueFor`, `GetSession`, `MarkConsumed`, `RequestSeed`, `ReceiveSeed`), `_ScoreService` (`ValidatePayload`, `SubmitFor`, `SubmitRun`, `ReceiveSubmitResult`, constants `GAME_SECONDS`/`GRACE_SECONDS`/`MAX_MOVES`, reasons `ok|bad_token|timing|replay_mismatch|already|bad_payload`), `_RankAttemptStore` (`AttemptKey`, `TryConsumeDaily`, `IsDailyConsumed`, `GetPersonalBest`, `SetPersonalBestIfHigher`). Return shapes are stable: session `{userId, seed, dateKey, mode, issuedAt, consumed}`; issuance `{token, seed, dateKey, alreadyPlayed, personalBest, mode}`; submit `{accepted, finalScore, personalBest, reason}`; `_PuzzleCore:Replay` `{score, ok}` and `move={rect={c1,r1,c2,r2}, t}` consumed exactly as Plan 1 produces. `integer` vs `number` is consistent (errCode/dateKey/score integer; clientElapsed/TotalSeconds number).
+**3. Type consistency:** Names match across tasks and the interface contract — `_SeedService` (`KstDateKey`, `IssueFor`, `GetSession`, `MarkConsumed`, `RequestSeed`, `ReceiveSeed`), `_ScoreService` (`ValidatePayload`, `SubmitFor`, `SubmitRun`, `ReceiveSubmitResult`, `RequestPersonalBest`, `ReceivePersonalBest`, constants `GAME_SECONDS`/`GRACE_SECONDS`/`MAX_MOVES`, reasons `ok|bad_token|timing|replay_mismatch|already|bad_payload`), `_RankAttemptStore` (`AttemptKey`, `TryConsumeDaily`, `IsDailyConsumed`, `GetPersonalBest`, `SetPersonalBestIfHigher`). Return shapes are stable: session `{userId, seed, dateKey, mode, issuedAt, consumed}`; issuance `{token, seed, dateKey, alreadyPlayed, personalBest, mode}`; submit `{accepted, finalScore, personalBest, reason}`; `_PuzzleCore:Replay` `{score, ok}` and `move={rect={c1,r1,c2,r2}, t}` consumed exactly as Plan 1 produces. `integer` vs `number` is consistent (errCode/dateKey/score integer; clientElapsed/TotalSeconds number). `RequestPersonalBest` takes no params (read-only, uses `senderUserId`); `ReceivePersonalBest(integer personalBest)` matches the interface contract byte-for-byte.
 
 ---
 

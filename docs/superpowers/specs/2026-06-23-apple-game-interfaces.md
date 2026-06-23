@@ -29,6 +29,8 @@ Issues seeds + session tokens; consumes the daily ranked attempt at **issuance**
 Validates and records a completed run.
 - `@ExecSpace("Server") method void SubmitRun(string token, table moves, integer claimedScore, number clientElapsed)` — validates: (1) token exists, belongs to `senderUserId`, not yet consumed; (2) `clientElapsed` and server elapsed since issuance both within the 120s game window + slack (reject absurd timing); (3) `local r = _PuzzleCore:Replay(session.seed, moves)`; accept iff `r.ok and r.score == claimedScore`. On accept: mark token consumed, update `personalBest` (keep-max), and for `mode=="ranked"` call `_LeaderboardService:SubmitScore(senderUserId, r.score)` (Plan 3). Reply via Client RPC.
 - `@ExecSpace("Client") method void ReceiveSubmitResult(boolean accepted, integer finalScore, integer personalBest, string reason)` — server→caller. `reason` ∈ `"ok"|"bad_token"|"timing"|"replay_mismatch"|"already"`.
+- `@ExecSpace("Server") method void RequestPersonalBest()` — client entry for the Leaderboard "Single" tab. Reads `_RankAttemptStore:GetPersonalBest(senderUserId)` and replies via the Client RPC below. No token needed (read-only, idempotent).
+- `@ExecSpace("Client") method void ReceivePersonalBest(integer personalBest)` — server→caller; delivered to `_LeaderboardController` via the same server→client bridge as `ReceiveSubmitResult`. (`targetUserId` appended at call site, not declared.)
 
 ### `_RankAttemptStore` (folded into SeedService or standalone, Server/)
 - `method boolean TryConsumeDaily(string userId, integer dateKey)` — ServerOnly; `UpdateAndWait("rankAttempt:"..dateKey, "", "1")` on the user's UserDataStorage; returns true if newly consumed, false if already set. (First-write fallback: GetAndWait → if NotFound, SetAndWait.)
@@ -52,6 +54,8 @@ Validates and records a completed run.
 
 **Staleness (accepted):** public leaderboard is a ≥30-min snapshot; the player's own just-submitted score is shown immediately from ScoreService's `personalBest`, and the board labels its refresh cadence. Not real-time by design.
 
+**Client tab layout:** the client renders **5 tabs** — Day/Week/AllTime (ranking boards 1/2/3 above) + Single (player's personal best, fetched via `_ScoreService:RequestPersonalBest`) + Multi (locked static placeholder, Phase 2). Boards 4 and 5 are **client-side UI sentinels** (`BOARD_SINGLE=4`, `BOARD_MULTI=5`) and are **never** passed to `RequestLeaderboard` (which only accepts 1/2/3).
+
 ---
 
 ## Plan 4 — Client Game (consumes all above)
@@ -60,9 +64,9 @@ Validates and records a completed run.
 - On map enter: call `_SeedService:RequestSeed(mode)`; on `ReceiveSeed`, `grid = _PuzzleCore:GenerateBoard(seed)`, render board, start 120s timer, begin recording `moves`.
 - Drag selection (GATE D): full-screen `UITouchReceiveComponent` panel; `UITouchDownEvent`→anchor, `UITouchDragEvent`→current corner (draw selection rect overlay), `UITouchUpEvent`→finalize. Map screen→cell via `_UILogic:ScreenToLocalUIPosition(TouchPoint, gridTransform)` ÷ cell size. Gate `TouchId==1` (mobile single-finger) / `-1` (PC). On a valid clear, call `_PuzzleCore:ApplyMove` locally for instant feedback AND append `{rect, t}` to `moves`.
 - On timer end: `_ScoreService:SubmitRun(token, moves, clientScore, clientElapsed)`; on `ReceiveSubmitResult`, show Result UI (accepted/score/personalBest, or rejection reason).
-- Leaderboard UI: `_LeaderboardService:RequestLeaderboard(boardId, page)`; render `ReceiveLeaderboard` entries + the stale label + tabs for Day/Week/AllTime.
+- Leaderboard UI: **5-tab** popup — Day/Week/AllTime (call `_LeaderboardService:RequestLeaderboard(boardId, page)`, render `ReceiveLeaderboard` entries + stale label), Single (call `_ScoreService:RequestPersonalBest()`, show one "내 최고 점수: N" line from `ReceivePersonalBest`, no list, no stale label), Multi (locked static placeholder for Phase 2 — lock icon + "준비 중", no data call). Client-only UI sentinels: `BOARD_SINGLE=4`, `BOARD_MULTI=5` — never passed to `RequestLeaderboard`.
 
 ### UI (built via UIBuilder, `ui/AppleGame/`)
-- HUD (score, 120s timer bar, mode), board grid panel + touch panel + selection overlay, Result popup, Leaderboard popup (3 tabs). DefaultPlayer avatar hidden (renderer off; entity remains for ranking components).
+- HUD (score, 120s timer bar, mode), board grid panel + touch panel + selection overlay, Result popup, Leaderboard popup (5 tabs). DefaultPlayer avatar hidden (renderer off; entity remains for ranking components).
 
 **Gates to confirm live in Plan 4:** UITouchDrag PC threshold, RaycastTarget requirement on the touch panel, midnight rollover, weekly cycle start day.
