@@ -1,0 +1,123 @@
+@Component
+@ExecSpace("ClientOnly")
+script GameSession extends Component
+
+    -- Session state. mlua has no untyped instance fields, so every self.x must be a declared property;
+    -- table-valued ones are `any` (never @Sync'd) per the BoardController precedent.
+    property boolean active = false
+    property boolean started = false
+    property any moves = nil
+    property integer score = 0
+    property number timeLeft = 0
+    property string mode = "single"
+    property string token = ""
+    property integer seed = 0
+    property any grid = nil
+    property number startElapsed = 0
+
+    method void OnBeginPlay()
+        -- Initializes session state. Play does not begin here; it starts on map enter (auto-start) or
+        -- when a future title screen calls StartSession. This is a ClientOnly @Component on the map
+        -- entity (NOT a @Logic) so OnMapEnter/OnUpdate fire and the state resets on map unload.
+        self.active = false
+        self.started = false
+        self.moves = {}
+        self.score = 0
+        self.timeLeft = 0
+        self.mode = "single"
+        self.token = ""
+        self.seed = 0
+        self.grid = nil
+        self.startElapsed = 0
+        log("[GameSession] ready")
+    end
+
+    method void OnMapEnter(Entity m)
+        -- The local player entered the host map. Phase 1 has no title/mode-select UI, so single mode
+        -- begins automatically here -- exactly once, guarded by `started` (OnMapEnter can fire repeatedly,
+        -- e.g. when other players join the same map on this client).
+        -- @ExecSpace("ClientOnly") does NOT suppress server-side lifecycle dispatch for a map @Component:
+        -- OnMapEnter still fires on the server, where StartSession->RequestSeed runs with a nil
+        -- senderUserId and crashes IssueFor (LEA-3007 ArgumentNilOrEmpty 'userId'). The whole play
+        -- session is client-side (seed RPC, board, input), so only auto-start on the client.
+        if not self:IsClient() then return end
+        if self.started then return end
+        self.started = true
+        log("[GameSession] map enter -> auto-start single")
+        self:StartSession("single")
+    end
+
+    method void StartSession(string mode)
+        -- Requests a seed for the chosen mode; play continues asynchronously in OnReceiveSeed.
+        self.mode = mode
+        self.moves = {}
+        self.score = 0
+        _HudController:SetMode(mode)
+        _HudController:SetScore(0)
+        _SeedService:RequestSeed(mode)
+        log("[GameSession] requested seed mode=" .. mode)
+    end
+
+    method void OnReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
+        -- Server reply, bridged from SeedService.ReceiveSeed. Ranked-already-played shows a notice;
+        -- otherwise build the board from the seed, bind drag input, and start the 120s timer.
+        if alreadyPlayed then
+            if _ResultController ~= nil then _ResultController:ShowAlreadyPlayed(personalBest) end
+            log("[GameSession] ranked already played today")
+            return
+        end
+        self.token = token
+        self.seed = seed
+        self.grid = _PuzzleCore:GenerateBoard(seed)
+        _BoardController:RenderBoard(self.grid)
+        _BoardController:BindInput(
+            _EntityService:GetEntityByPath("/ui/AppleBoard/TouchPanel"),
+            self.grid,
+            function(rect, clearedCount)
+                self:OnValidClear(rect, clearedCount)
+            end)
+        self.startElapsed = _UtilLogic.ElapsedSeconds
+        self.timeLeft = 120
+        self.active = true
+        _HudController:SetTimeRatio(1.0)
+        _HudController:SetTimeText(120)
+        log("[GameSession] session started seed=" .. tostring(seed))
+    end
+
+    method void OnValidClear(table rect, integer clearedCount)
+        -- Scores a confirmed sum-10 clear and appends the move (relative timestamp) to the run log.
+        self.score += clearedCount
+        local t = _UtilLogic.ElapsedSeconds - self.startElapsed
+        self.moves[#self.moves + 1] = { rect = rect, t = t }
+        _HudController:SetScore(self.score)
+    end
+
+    method void OnUpdate(number delta)
+        -- Drains the 120s timer; on expiry ends the run and submits. Delta-driven (never anchored to a
+        -- raw ElapsedSeconds reading) so the countdown stays correct across frames.
+        if not self.active then return end
+        self.timeLeft = self.timeLeft - delta
+        if self.timeLeft <= 0 then
+            self.timeLeft = 0
+            self:EndSession()
+        end
+        _HudController:SetTimeRatio(self.timeLeft / 120)
+        _HudController:SetTimeText(math.ceil(self.timeLeft))
+    end
+
+    method void EndSession()
+        -- Stops play, unbinds input, and submits the run for server-side validation/scoring.
+        if not self.active then return end
+        self.active = false
+        _BoardController:UnbindInput()
+        local clientElapsed = _UtilLogic.ElapsedSeconds - self.startElapsed
+        _ScoreService:SubmitRun(self.token, self.moves, self.score, clientElapsed)
+        log("[GameSession] submitted score=" .. tostring(self.score) .. " moves=" .. tostring(#self.moves))
+    end
+
+    method void OnEndPlay()
+        -- Cleanup: unbind input handlers if the map unloads mid-session.
+        if self.active then _BoardController:UnbindInput() end
+    end
+
+end

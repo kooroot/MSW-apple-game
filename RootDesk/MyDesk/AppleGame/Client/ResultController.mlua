@@ -74,9 +74,13 @@ script ResultController extends Logic
 
     method void OnRetry()
         -- Closes the popup and restarts a session in the same mode. GameSession is a map @Component
-        -- (Task 6) on the AppleGame map; resolve it nil-safely so an early/off-map click is a no-op.
+        -- (Task 6); resolve it off the local player's current map (map-name independent) so an early/
+        -- off-map click is a safe no-op.
+        _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
         self:Hide()
-        local mapEnt = _EntityService:GetEntityByPath("/maps/AppleGame")
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local mapEnt = player.CurrentMap
         if not isvalid(mapEnt) then return end
         local session = mapEnt:GetComponent("script.GameSession")
         if not isvalid(session) then return end
@@ -88,6 +92,7 @@ script ResultController extends Logic
 
     method void OnRank()
         -- Closes the popup and opens the leaderboard (LeaderboardController ships in Task 8).
+        _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
         self:Hide()
         if _LeaderboardController ~= nil then _LeaderboardController:Open(1) end
     end

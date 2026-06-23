@@ -127,5 +127,18 @@ script SeedService extends Logic
     method void ReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
         -- Server->caller reply; the client GameSession (Plan 4) builds the board from seed unless alreadyPlayed.
         log("[SEED] client received mode=" .. mode .. " alreadyPlayed=" .. tostring(alreadyPlayed) .. " seed=" .. tostring(seed))
+        -- Plan 4 delivery bridge #4 (direct guarded call, same decision as the ScoreService/LeaderboardService
+        -- bridges). GameSession is a map @Component, NOT a @Logic global, so resolve it off the local player's
+        -- current map. Guarded so a reply arriving before the session exists / off-map is a safe no-op.
+        local player = _UserService.LocalPlayer
+        if isvalid(player) then
+            local map = player.CurrentMap
+            if isvalid(map) then
+                local gs = map:GetComponent("script.GameSession")
+                if isvalid(gs) then
+                    gs:OnReceiveSeed(mode, seed, token, dateKey, alreadyPlayed, personalBest)
+                end
+            end
+        end
     end
 end

@@ -16,7 +16,7 @@
       {
         "id": "c0413bbe-5ea9-4023-b126-0197a86446c8",
         "path": "/maps/map01",
-        "componentNames": "MOD.Core.MapComponent,MOD.Core.FootholdComponent",
+        "componentNames": "MOD.Core.MapComponent,MOD.Core.FootholdComponent,script.HidePlayerAvatar,script.GameSession",
         "jsonString": {
           "name": "map01",
           "path": "/maps/map01",
@@ -32,12 +32,20 @@
             {
               "@type": "MOD.Core.MapComponent",
               "IsInstanceMap": false,
-              "TileMapMode": 0,
+              "TileMapMode": 1,
               "Enable": true
             },
             {
               "@type": "MOD.Core.FootholdComponent",
               "FootholdsByLayer": {},
+              "Enable": true
+            },
+            {
+              "@type": "script.HidePlayerAvatar",
+              "Enable": true
+            },
+            {
+              "@type": "script.GameSession",
               "Enable": true
             }
           ],
@@ -62,8 +70,14 @@
           "@components": [
             {
               "@type": "MOD.Core.BackgroundComponent",
+              "SolidColor": {
+                "r": 0.549019635,
+                "g": 0.34117648,
+                "b": 0.164705887,
+                "a": 1
+              },
               "TemplateRUID": "794ad8421e2543d8a6d2c70307637450",
-              "Type": 1,
+              "Type": 2,
               "Enable": true
             }
           ],
@@ -107,12 +121,12 @@
         }
       },
       {
-        "id": "09128460-5688-4117-a166-fe2c8c60f5d0",
-        "path": "/maps/map01/TileMap",
-        "componentNames": "MOD.Core.TransformComponent,MOD.Core.TileMapComponent",
+        "id": "be315d2f-1c29-4076-83f8-0158d3c52c95",
+        "path": "/maps/map01/RectTileMap",
+        "componentNames": "MOD.Core.TransformComponent,MOD.Core.RectTileMapComponent",
         "jsonString": {
-          "name": "TileMap",
-          "path": "/maps/map01/TileMap",
+          "name": "RectTileMap",
+          "path": "/maps/map01/RectTileMap",
           "nameEditable": false,
           "enable": true,
           "visible": true,
@@ -122,38 +136,34 @@
           "revision": 1,
           "origin": {
             "type": "Model",
-            "entry_id": "tilemap",
+            "entry_id": "recttilemap",
             "sub_entity_id": null,
             "root_entity_id": null,
             "replaced_model_id": null
           },
-          "modelId": "tilemap",
+          "modelId": "recttilemap",
           "@components": [
             {
               "@type": "MOD.Core.TransformComponent",
               "Position": {
-                "x": -0.225,
-                "y": -0.15,
-                "z": 1000.0
+                "x": 0,
+                "y": 0,
+                "z": 1000
               },
               "QuaternionRotation": {
-                "x": 0.0,
-                "y": 0.0,
-                "z": 0.0,
-                "w": 1.0
+                "x": 0,
+                "y": 0,
+                "z": 0,
+                "w": 1
               },
               "Enable": true
             },
             {
-              "@type": "MOD.Core.TileMapComponent",
-              "IsOddGridPosition": false,
+              "@type": "MOD.Core.RectTileMapComponent",
               "SortingLayer": "MapLayer0",
-              "TileMapVersion": 1,
-              "TileSetRUID": {
-                "DataId": ""
-              },
-              "Tiles": [],
-              "Enable": true
+              "TileSetRUID": null,
+              "Enable": true,
+              "tileMap": []
             }
           ],
           "@version": 1
