@@ -8,7 +8,10 @@ script HudController extends Logic
     property SpriteGUIRendererComponent timerFill = "2b1bbb55-41a4-4f9b-b0cf-dd158c93c0c1"
 
     method void OnBeginPlay()
-        -- Initializes the HUD to a clean zero/full state at world start.
+        -- Initializes the HUD to a clean zero/full state at world start. Runs on BOTH server and
+        -- client; all UI access goes through the guarded setters (SetScore/SetTimeRatio/SetTimeText),
+        -- so on the server (where UI refs are nil) each call is a safe no-op. Any future direct UI
+        -- deref added here MUST be isvalid()-guarded too.
         self:SetScore(0)
         self:SetTimeRatio(1.0)
         self:SetTimeText(120)

@@ -42,7 +42,8 @@ script BoardController extends Logic
     end
 
     method void CacheCells()
-        -- Resolves all 170 cell entities by name once and stores their renderer/text components.
+        -- (internal; only RenderBoard/SetCellValue call this) Resolves all 170 cell entities by name
+        -- once and stores their renderer/text components.
         -- No-ops until the grid UI exists (gridPanel is nil on the server and before UI load).
         if self.cached then return end
         if not isvalid(self.gridPanel) then return end
@@ -85,7 +86,10 @@ script BoardController extends Logic
     method void RenderBoard(table grid)
         -- Paints all 170 cells from a 0-indexed grid[row][col]; caches handles on first call.
         self:CacheCells()
-        if not self.cached then return end
+        if not self.cached then
+            log("[BoardController] RenderBoard skipped: grid not ready (cache not built)")
+            return
+        end
         for r = 0, self.ROWS - 1 do
             for c = 0, self.COLS - 1 do
                 local v = 0
@@ -111,6 +115,8 @@ script BoardController extends Logic
         local h = rows * self.CellH
         local gw = self.COLS * self.CellW
         local gh = self.ROWS * self.CellH
+        -- (cLo+cHi)/2 is float division: an even-width span yields a .5 center, the correct sub-pixel
+        -- visual center for the overlay/sum. Do NOT math.floor this -- Vector2 accepts number.
         local centerCol = (cLo + cHi) / 2
         local centerRow = (rLo + rHi) / 2
         local x = -gw / 2 + self.CellW / 2 + centerCol * self.CellW

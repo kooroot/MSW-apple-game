@@ -1,4 +1,5 @@
 @Logic
+@ExecSpace("ClientOnly")
 script AssetCatalog extends Logic
 
     property string PlaceholderIcon = "1705e3c5b2c146ac9a699f96fb067408"
