@@ -6,29 +6,40 @@ script LeaderboardService extends Logic
 	property integer PAGE_SIZE     = 20
 
 	method string SanitizeTag(string name)
-		-- Returns a safe ranking tag: pipe-free (the engine's delimiter) and UTF-8 byte count <= 55.
+		-- Returns a safe ranking tag: pipe-free (the engine's delimiter) and UTF-8 byte length <= 55,
+		-- truncated on a codepoint boundary so multibyte (e.g. Korean, 3 bytes/char) chars are never split.
 		local clean, _ = name:gsub("|", "")
-		-- Truncate to 55 bytes (simple byte slice; safe for ASCII/common Korean).
-		if #clean > 55 then
-			clean = clean:sub(1, 55)
+		if #clean <= 55 then
+			return clean
 		end
-		return clean
+		-- Walk back from byte 55 while the first EXCLUDED byte (cut+1) is a UTF-8 continuation byte
+		-- (0x80..0xBF); a lead byte (>=0xC0), ASCII (<0x80), or end-of-string is a clean boundary.
+		local cut = 55
+		while cut > 0 do
+			local b = clean:byte(cut + 1)
+			if b == nil or b < 0x80 or b >= 0xC0 then
+				break
+			end
+			cut = cut - 1
+		end
+		return clean:sub(1, cut)
 	end
 
-	method any FindPlayerRanking(string userId)
-		-- Searches connected users for the matching userId; nil if absent or DB not yet loaded.
-		for _, p in ipairs(_UserService.UserEntities.Values) do
-			if isvalid(p) then
-				local pc = p.PlayerComponent
-				if pc ~= nil and pc.UserId == userId then
-					local dbm = p.PlayerDBManager
-					if dbm ~= nil and dbm.IsLoadSuccess then
-						return p.PlayerRanking
-					end
-				end
-			end
+	method Entity FindPlayerEntity(string userId)
+		-- Returns the connected player entity for userId once its DB has loaded; nil otherwise.
+		-- Uses the engine's O(1) lookup rather than scanning every connected user.
+		local p = _UserService:GetUserEntityByUserId(userId)
+		if not isvalid(p) then
+			return nil
 		end
-		return nil
+		if p.PlayerComponent == nil then
+			return nil
+		end
+		local dbm = p.PlayerDBManager
+		if dbm == nil or not dbm.IsLoadSuccess then
+			return nil
+		end
+		return p
 	end
 
 	@ExecSpace("ServerOnly")
@@ -39,14 +50,25 @@ script LeaderboardService extends Logic
 			return
 		end
 
-		local playerRanking = self:FindPlayerRanking(userId)
+		local playerEntity = self:FindPlayerEntity(userId)
+		if not isvalid(playerEntity) then
+			log_warning("[LeaderboardService] SubmitScore: player not ready (absent or DB unloaded) for userId=" .. userId)
+			return
+		end
+
+		local playerRanking = playerEntity.PlayerRanking
 		if playerRanking == nil then
-			log_warning("[LeaderboardService] SubmitScore: PlayerRanking not ready for userId=" .. userId)
+			log_warning("[LeaderboardService] SubmitScore: PlayerRanking component missing for userId=" .. userId)
 			return
 		end
 
 		local elapsed = _DateTimeLogic:GetTimeElapsed()
-		local tag = self:SanitizeTag(userId)  -- Plan 4 will pass the display name; userId is the fallback
+		-- Prefer the player's display nickname; fall back to userId when unavailable.
+		local displayName = playerEntity.PlayerComponent.Nickname
+		if displayName == nil or displayName == "" then
+			displayName = userId
+		end
+		local tag = self:SanitizeTag(displayName)
 		local extra = ""
 
 		local boards = { self.BOARD_DAY, self.BOARD_WEEK, self.BOARD_ALLTIME }
