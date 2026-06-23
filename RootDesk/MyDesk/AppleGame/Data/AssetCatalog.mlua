@@ -1,0 +1,55 @@
+@Logic
+script AssetCatalog extends Logic
+
+    property string PlaceholderIcon = "1705e3c5b2c146ac9a699f96fb067408"
+
+    -- Icon RUID per cell value 1..9. The apple game (Fruit Box) uses one identical
+    -- apple tile for every value; the number text overlay (BoardController) distinguishes
+    -- them, so all nine map to the same apple sprite RUID.
+    property string Icon1 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon2 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon3 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon4 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon5 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon6 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon7 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon8 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    property string Icon9 = "263b7db3067545a7acf7bbe5c3b61a4c"
+
+    property string SfxClearRUID = "1b3f41dc6ed84a9a95732c2b620b6393"
+    property string SfxFailRUID = "174d501eccd04eadbd6c6411d4ade7e7"
+    property string SfxTickRUID = "778160a185c4464ea829b609d7afeea1"
+
+    method string IconRUID(integer value)
+        -- Returns the icon RUID for a cell value (1..9), falling back to the placeholder so a cell is never invisible.
+        local r = ""
+        if value == 1 then r = self.Icon1
+        elseif value == 2 then r = self.Icon2
+        elseif value == 3 then r = self.Icon3
+        elseif value == 4 then r = self.Icon4
+        elseif value == 5 then r = self.Icon5
+        elseif value == 6 then r = self.Icon6
+        elseif value == 7 then r = self.Icon7
+        elseif value == 8 then r = self.Icon8
+        elseif value == 9 then r = self.Icon9
+        end
+        if r == nil or r == "" then return self.PlaceholderIcon end
+        return r
+    end
+
+    method string SfxClear()
+        -- SFX RUID for a successful sum-10 clear (may be "" if none assigned yet).
+        return self.SfxClearRUID
+    end
+
+    method string SfxFail()
+        -- SFX RUID for an invalid selection release (may be "").
+        return self.SfxFailRUID
+    end
+
+    method string SfxTick()
+        -- SFX RUID for the final-seconds timer tick (may be "").
+        return self.SfxTickRUID
+    end
+
+end
