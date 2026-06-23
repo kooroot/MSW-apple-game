@@ -1,0 +1,219 @@
+@Logic
+@ExecSpace("ClientOnly")
+script LeaderboardController extends Logic
+
+    -- Board ids (must match LeaderboardService / RankingConfig): 1=Day 2=Week 3=AllTime,
+    -- plus two client-only virtual tabs 4=Single (personal best) and 5=Multi (Phase 2, locked).
+    property integer BOARD_DAY = 1
+    property integer BOARD_WEEK = 2
+    property integer BOARD_ALLTIME = 3
+    property integer BOARD_SINGLE = 4
+    property integer BOARD_MULTI = 5
+    property integer PAGE_SIZE = 20
+
+    -- UI refs injected by the UIBuilder bind step (placeholder UUIDs until then).
+    property Entity panel = "39d0ed8b-2c4c-4631-b9fb-177f6d9e9b3d"
+    property Entity dimmer = "9717bb42-dd79-43aa-832e-d61a931c5248"
+    property Entity listRoot = "16b152a0-478b-4e56-9b1b-ce0ea7c01d49"
+    property Entity rowTemplate = "a8b8981c-e082-46a1-b416-b93df36c07c4"
+    property Entity multiLocked = "22a24f74-8db9-4fdb-be37-f5fed4cb84a6"
+    property TextComponent myRank = "18403f5a-6179-4948-b025-a981ca584716"
+    property TextComponent singlePB = "f0cab94c-13d3-42e4-b141-aed3bc4537a6"
+    property ButtonComponent tabDay = "3882e9cf-f47d-4cc6-9668-7664273281a7"
+    property ButtonComponent tabWeek = "75cad766-7316-4292-975c-82c1109ed029"
+    property ButtonComponent tabAll = "67571265-b4ff-4fe8-bb4d-e7feb9825b2c"
+    property ButtonComponent tabSingle = "b80e5b8a-d413-43bd-b2e5-86cf1de5d760"
+    property ButtonComponent tabMulti = "a32878a5-8a3c-48e4-b55f-163897e2043b"
+    property ButtonComponent btnClose = "5226f3ed-69c4-46c1-a012-25c3fba90b17"
+
+    -- Cloned row entities (table-valued) and EventHandlerBase tokens must be `any`
+    -- (mlua has no untyped instance fields; EventHandlerBase cannot be a typed property).
+    property any rows = nil
+    property integer currentTab = 1
+    property any dayHandler = nil
+    property any weekHandler = nil
+    property any allHandler = nil
+    property any singleHandler = nil
+    property any multiHandler = nil
+    property any closeHandler = nil
+
+    method void OnBeginPlay()
+        -- Hides the popup, disables the row prefab, and wires the 5 tabs + close button. A @Logic
+        -- OnBeginPlay runs on BOTH server and client; on the server every UI ref is nil, so each
+        -- deref is isvalid-guarded (same hazard as Hud/Board/ResultController).
+        self.rows = {}
+        self.currentTab = self.BOARD_DAY
+        if isvalid(self.rowTemplate) then self.rowTemplate:SetEnable(false) end
+        self:Hide()
+        -- Tabs need a per-tab boardId, so each handler is a closure (captures self). MSW
+        -- ConnectEvent dispatches with self bound; the token is stored for OnEndPlay teardown.
+        if isvalid(self.tabDay) then
+            self.dayHandler = self.tabDay.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_DAY) end)
+        end
+        if isvalid(self.tabWeek) then
+            self.weekHandler = self.tabWeek.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_WEEK) end)
+        end
+        if isvalid(self.tabAll) then
+            self.allHandler = self.tabAll.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_ALLTIME) end)
+        end
+        if isvalid(self.tabSingle) then
+            self.singleHandler = self.tabSingle.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_SINGLE) end)
+        end
+        if isvalid(self.tabMulti) then
+            self.multiHandler = self.tabMulti.Entity:ConnectEvent(ButtonClickEvent, function() self:SelectTab(self.BOARD_MULTI) end)
+        end
+        if isvalid(self.btnClose) then
+            self.closeHandler = self.btnClose.Entity:ConnectEvent(ButtonClickEvent, function() self:Hide() end)
+        end
+        log("[LeaderboardController] ready")
+    end
+
+    method void Open(integer boardId)
+        -- Opens the leaderboard popup on the given board/tab.
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        self:SelectTab(boardId)
+    end
+
+    method void ShowRankingPanel()
+        -- Ranking tabs (Day/Week/AllTime): show the row list + my-rank, hide single/multi panels.
+        if isvalid(self.listRoot) then self.listRoot.Enable = true end
+        if isvalid(self.myRank) then self.myRank.Entity.Enable = true end
+        if isvalid(self.singlePB) then self.singlePB.Entity.Enable = false end
+        if isvalid(self.multiLocked) then self.multiLocked.Enable = false end
+    end
+
+    method void ShowSinglePanel()
+        -- Single tab: show only the personal-best label.
+        if isvalid(self.listRoot) then self.listRoot.Enable = false end
+        if isvalid(self.myRank) then self.myRank.Entity.Enable = false end
+        if isvalid(self.singlePB) then self.singlePB.Entity.Enable = true end
+        if isvalid(self.multiLocked) then self.multiLocked.Enable = false end
+    end
+
+    method void ShowMultiPanel()
+        -- Multi tab (Phase 2): show only the locked placeholder.
+        if isvalid(self.listRoot) then self.listRoot.Enable = false end
+        if isvalid(self.myRank) then self.myRank.Entity.Enable = false end
+        if isvalid(self.singlePB) then self.singlePB.Entity.Enable = false end
+        if isvalid(self.multiLocked) then self.multiLocked.Enable = true end
+    end
+
+    method void PaintTab(ButtonComponent tab, boolean active)
+        -- Tints one tab's background sprite: accent blue when active, muted slate otherwise.
+        if not isvalid(tab) then return end
+        local sp = tab.Entity.SpriteGUIRendererComponent
+        if not isvalid(sp) then return end
+        if active then
+            sp.Color = Color(0.20, 0.45, 0.78, 1.0)
+        else
+            sp.Color = Color(0.18, 0.21, 0.28, 1.0)
+        end
+    end
+
+    method void PaintTabs(integer activeBoardId)
+        -- Highlights the active tab and mutes the other four.
+        self:PaintTab(self.tabDay, activeBoardId == self.BOARD_DAY)
+        self:PaintTab(self.tabWeek, activeBoardId == self.BOARD_WEEK)
+        self:PaintTab(self.tabAll, activeBoardId == self.BOARD_ALLTIME)
+        self:PaintTab(self.tabSingle, activeBoardId == self.BOARD_SINGLE)
+        self:PaintTab(self.tabMulti, activeBoardId == self.BOARD_MULTI)
+    end
+
+    method void SelectTab(integer boardId)
+        -- Switches the active tab. currentTab is set BEFORE requesting so a late ReceiveLeaderboard
+        -- for a tab the user already left is dropped by OnReceiveLeaderboard's guard.
+        self.currentTab = boardId
+        self:PaintTabs(boardId)
+        if boardId == self.BOARD_DAY or boardId == self.BOARD_WEEK or boardId == self.BOARD_ALLTIME then
+            self:ShowRankingPanel()
+            if _LeaderboardService ~= nil then _LeaderboardService:RequestLeaderboard(boardId, 1) end
+        elseif boardId == self.BOARD_SINGLE then
+            self:ShowSinglePanel()
+            if _ScoreService ~= nil then _ScoreService:RequestPersonalBest() end
+        elseif boardId == self.BOARD_MULTI then
+            self:ShowMultiPanel()
+        end
+    end
+
+    method void OnReceivePersonalBest(integer personalBest)
+        -- Bridged from _ScoreService:ReceivePersonalBest (Task 9). Fills the single-tab label.
+        if isvalid(self.singlePB) then
+            self.singlePB.Text = "내 최고 점수: " .. tostring(personalBest)
+        end
+    end
+
+    method void ClearRows()
+        -- Destroys all cloned row entities and resets the cache.
+        if self.rows == nil then self.rows = {} return end
+        for i, row in ipairs(self.rows) do
+            if isvalid(row) then row:Destroy() end
+        end
+        self.rows = {}
+    end
+
+    method void OnReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)
+        -- Bridged from _LeaderboardService:ReceiveLeaderboard (Task 9). Rebuilds the row list by
+        -- cloning the hidden RowTemplate per entry. Drops replies for a tab the user already left.
+        if boardId ~= self.currentTab then return end
+        self:ClearRows()
+        if not isvalid(self.rowTemplate) then return end
+        for i, e in ipairs(entries) do
+            local row = self.rowTemplate:Clone("Row_" .. i)
+            if isvalid(row) then
+                row:SetEnable(true)
+                local rankNode = row:GetChildByName("Rank", false)
+                if isvalid(rankNode) then rankNode.TextComponent.Text = tostring(e.rank) end
+                local nameNode = row:GetChildByName("Name", false)
+                if isvalid(nameNode) then nameNode.TextComponent.Text = e.name end
+                local scoreNode = row:GetChildByName("Score", false)
+                if isvalid(scoreNode) then scoreNode.TextComponent.Text = tostring(e.score) end
+                table.insert(self.rows, row)
+            end
+        end
+        if isvalid(self.myRank) then
+            if myRank > 0 then
+                self.myRank.Text = "내 순위 " .. tostring(myRank) .. "위 (" .. tostring(myScore) .. "점)"
+            else
+                self.myRank.Text = "내 순위 - (기록 없음)"
+            end
+        end
+        log("[LeaderboardController] rendered board=" .. tostring(boardId) .. " rows=" .. tostring(#entries) .. " stale=" .. tostring(stale))
+    end
+
+    method void Hide()
+        -- Closes the popup. Guarded so the server-side OnBeginPlay call is a safe no-op.
+        if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.dimmer) then self.dimmer.Enable = false end
+    end
+
+    method void OnEndPlay()
+        -- Disconnects all tab/close handlers (mirror of OnBeginPlay) and destroys cloned rows.
+        if self.dayHandler ~= nil and isvalid(self.tabDay) then
+            self.tabDay.Entity:DisconnectEvent(ButtonClickEvent, self.dayHandler)
+        end
+        if self.weekHandler ~= nil and isvalid(self.tabWeek) then
+            self.tabWeek.Entity:DisconnectEvent(ButtonClickEvent, self.weekHandler)
+        end
+        if self.allHandler ~= nil and isvalid(self.tabAll) then
+            self.tabAll.Entity:DisconnectEvent(ButtonClickEvent, self.allHandler)
+        end
+        if self.singleHandler ~= nil and isvalid(self.tabSingle) then
+            self.tabSingle.Entity:DisconnectEvent(ButtonClickEvent, self.singleHandler)
+        end
+        if self.multiHandler ~= nil and isvalid(self.tabMulti) then
+            self.tabMulti.Entity:DisconnectEvent(ButtonClickEvent, self.multiHandler)
+        end
+        if self.closeHandler ~= nil and isvalid(self.btnClose) then
+            self.btnClose.Entity:DisconnectEvent(ButtonClickEvent, self.closeHandler)
+        end
+        self.dayHandler = nil
+        self.weekHandler = nil
+        self.allHandler = nil
+        self.singleHandler = nil
+        self.multiHandler = nil
+        self.closeHandler = nil
+        self:ClearRows()
+    end
+
+end
