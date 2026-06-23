@@ -84,4 +84,45 @@ script PuzzleCoreTest extends Logic
         end
         self:Expect("board_seed_sensitive", anyDiff)
     end
+
+    method table MakeGrid2x3(table vals)
+        -- Builds a 2-row x 3-col 0-indexed grid from vals[r][c] (test helper, no RNG).
+        local g = {}
+        for r = 0, 1 do
+            g[r] = {}
+            for c = 0, 2 do
+                g[r][c] = vals[r][c]
+            end
+        end
+        return g
+    end
+
+    method void TestApplyMove()
+        -- Validates sum==10 rule, cleared-cell exclusion, normalization, and range guard.
+        -- Grid:
+        --   row0: 4 6 1
+        --   row1: 7 3 9
+        local g = self:MakeGrid2x3({ [0] = { [0]=4, [1]=6, [2]=1 }, [1] = { [0]=7, [1]=3, [2]=9 } })
+        local r1 = _PuzzleCore:ApplyMove(g, { c1=0, r1=0, c2=1, r2=0 }) -- 4+6=10
+        self:Expect("valid_sum10", r1.valid == true and r1.clearedCount == 2)
+        self:Expect("valid_clears_cells", g[0][0] == 0 and g[0][1] == 0)
+
+        -- Re-select the now-cleared cells plus the '1': remaining sum = 0+0+1 = 1 -> invalid
+        local r2 = _PuzzleCore:ApplyMove(g, { c1=0, r1=0, c2=2, r2=0 })
+        self:Expect("cleared_excluded_from_sum", r2.valid == false and r2.clearedCount == 0)
+
+        -- Vertical 7+3 = 10 with reversed coords (normalization)
+        local r3 = _PuzzleCore:ApplyMove(g, { c1=1, r1=1, c2=1, r2=0 }) -- col1 rows1..0 -> 3 + (already 0) = 3?
+        -- NOTE: g[0][1] was cleared above, so col1 = {0 (row0), 3 (row1)} -> sum 3 -> invalid
+        self:Expect("normalize_then_invalid", r3.valid == false)
+
+        -- Fresh grid for an all-cleared-selection case
+        local z = self:MakeGrid2x3({ [0] = { [0]=0, [1]=0, [2]=5 }, [1] = { [0]=0, [1]=0, [2]=5 } })
+        local r4 = _PuzzleCore:ApplyMove(z, { c1=0, r1=0, c2=1, r2=1 }) -- all zeros -> sum 0
+        self:Expect("all_cleared_selection_invalid", r4.valid == false and r4.clearedCount == 0)
+
+        -- Out-of-range guard
+        local r5 = _PuzzleCore:ApplyMove(z, { c1=0, r1=0, c2=99, r2=0 })
+        self:Expect("out_of_range_invalid", r5.valid == false)
+    end
 end

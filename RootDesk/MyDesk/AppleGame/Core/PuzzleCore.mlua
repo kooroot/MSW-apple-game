@@ -16,4 +16,37 @@ script PuzzleCore extends Logic
         end
         return grid
     end
+
+    method table ApplyMove(table grid, table rect)
+        -- Normalizes rect (inclusive), sums remaining (>0) cells; if sum==10 clears them and returns the count.
+        local cLo = rect.c1
+        if rect.c2 < cLo then cLo = rect.c2 end
+        local cHi = rect.c1
+        if rect.c2 > cHi then cHi = rect.c2 end
+        local rLo = rect.r1
+        if rect.r2 < rLo then rLo = rect.r2 end
+        local rHi = rect.r1
+        if rect.r2 > rHi then rHi = rect.r2 end
+        if cLo < 0 or cHi > self.COLS - 1 or rLo < 0 or rHi > self.ROWS - 1 then
+            return { valid = false, clearedCount = 0 }
+        end
+        local sum = 0
+        local cells = {}
+        for r = rLo, rHi do
+            for c = cLo, cHi do
+                local v = grid[r][c]
+                if v ~= nil and v > 0 then
+                    sum += v
+                    cells[#cells + 1] = { r = r, c = c }
+                end
+            end
+        end
+        if sum ~= 10 then
+            return { valid = false, clearedCount = 0 }
+        end
+        for i = 1, #cells do
+            grid[cells[i].r][cells[i].c] = 0
+        end
+        return { valid = true, clearedCount = #cells }
+    end
 end
