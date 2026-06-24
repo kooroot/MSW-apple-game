@@ -17,6 +17,39 @@ script PuzzleCore extends Logic
         return grid
     end
 
+    method string EncodeBoard(table grid)
+        -- Serializes a freshly generated 1..9 board to a 170-char row-major digit string. This lets the
+        -- server STREAM the board to the client over an RPC string param instead of sending the seed
+        -- (the SA-2 fix: the client must not learn the seed). Generation only ever yields 1..9, so one
+        -- digit per cell is lossless, and a flat string sidesteps the nested-table RPC serialization
+        -- ambiguity around Lua's 0-based grid keys.
+        local parts = {}
+        local n = 0
+        for r = 0, self.ROWS - 1 do
+            for c = 0, self.COLS - 1 do
+                n = n + 1
+                parts[n] = tostring(grid[r][c])
+            end
+        end
+        return table.concat(parts)
+    end
+
+    method table DecodeBoard(string s)
+        -- Inverse of EncodeBoard: parses the 170-char digit string back into a 0-indexed grid[row][col].
+        -- Client-side render path (no seed needed). string.byte('0')==48, so byte-48 maps a digit char
+        -- to its integer value without per-cell tonumber/substring allocation.
+        local grid = {}
+        local i = 0
+        for r = 0, self.ROWS - 1 do
+            grid[r] = {}
+            for c = 0, self.COLS - 1 do
+                i = i + 1
+                grid[r][c] = string.byte(s, i) - 48
+            end
+        end
+        return grid
+    end
+
     method table ApplyMove(table grid, table rect)
         -- Normalizes rect (inclusive), sums remaining (>0) cells; if sum==10 clears them and returns the count.
         local cLo = rect.c1

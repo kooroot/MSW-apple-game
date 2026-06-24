@@ -11,7 +11,6 @@ script GameSession extends Component
     property number timeLeft = 0
     property string mode = "single"
     property string token = ""
-    property integer seed = 0
     property any grid = nil
     property number startElapsed = 0
     property string matchId = ""
@@ -29,7 +28,6 @@ script GameSession extends Component
         self.timeLeft = 0
         self.mode = "single"
         self.token = ""
-        self.seed = 0
         self.grid = nil
         self.startElapsed = 0
         self.matchId = ""
@@ -52,7 +50,7 @@ script GameSession extends Component
     end
 
     method void StartSession(string mode)
-        -- Requests a seed for the chosen mode; play continues asynchronously in OnReceiveSeed.
+        -- Requests a run for the chosen mode; play continues asynchronously in OnReceiveBoard.
         self.mode = mode
         self.moves = {}
         self.score = 0
@@ -62,12 +60,12 @@ script GameSession extends Component
         log("[GameSession] requested seed mode=" .. mode)
     end
 
-    method void StartBoard(integer seed, string token)
-        -- Builds and renders the board from the given seed, binds drag input, and starts the 120s timer.
-        -- Called by both OnReceiveSeed (single/ranked) and StartMatchSession (multi).
+    method void StartBoard(table grid, string token)
+        -- Renders the given board grid, binds drag input, and starts the 120s timer. Called by
+        -- OnReceiveBoard (single/ranked, server-streamed grid) and StartMatchSession (multi). The grid
+        -- arrives ready-built so the client never derives it from a seed (SA-2: no client-side board precompute).
         self.token = token
-        self.seed = seed
-        self.grid = _PuzzleCore:GenerateBoard(seed)
+        self.grid = grid
         _BoardController:RenderBoard(self.grid)
         _BoardController:BindInput(
             _EntityService:GetEntityByPath("/ui/AppleBoard/TouchPanel"),
@@ -80,12 +78,13 @@ script GameSession extends Component
         self.active = true
         _HudController:SetTimeRatio(1.0)
         _HudController:SetTimeText(120)
-        log("[GameSession] board started seed=" .. tostring(seed))
+        log("[GameSession] board started mode=" .. self.mode)
     end
 
-    method void OnReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
-        -- Server reply, bridged from SeedService.ReceiveSeed. Ranked-already-played shows a notice;
-        -- otherwise delegate board build and timer start to StartBoard.
+    method void OnReceiveBoard(string mode, string board, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
+        -- Server reply, bridged from SeedService.ReceiveBoard. Ranked-already-played shows a notice;
+        -- otherwise decode the server-streamed 170-char board string and start the run. No seed reaches
+        -- the client, so it cannot precompute the board ahead of play (SA-2 fix).
         -- dateKey is accepted to match the bridge signature but intentionally unused here: the run
         -- token already encodes the date server-side, so the client never needs it.
         if alreadyPlayed then
@@ -93,7 +92,7 @@ script GameSession extends Component
             log("[GameSession] ranked already played today")
             return
         end
-        self:StartBoard(seed, token)
+        self:StartBoard(_PuzzleCore:DecodeBoard(board), token)
     end
 
     method void StartMatchSession(string matchId, integer seed, string token)
@@ -108,7 +107,9 @@ script GameSession extends Component
         self.lastLiveReport = 0
         _HudController:SetMode("multi")
         _HudController:SetScore(0)
-        self:StartBoard(seed, token)
+        -- Phase S2 TODO: multi still receives the raw seed and generates the board client-side here.
+        -- Convert MatchService to stream the encoded board (like single/ranked) to close SA-2 for multi too.
+        self:StartBoard(_PuzzleCore:GenerateBoard(seed), token)
     end
 
     method void OnValidClear(table rect, integer clearedCount)
