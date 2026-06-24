@@ -41,20 +41,21 @@ script ScoreService extends Logic
     end
 
     @ExecSpace("ServerOnly")
-    method table SubmitFor(string userId, string token, table moves, integer claimedScore, number clientElapsed)
-        -- Full server-authoritative validation + replay-trusted scoring; returns the result payload.
+    method table ValidateRun(string userId, string token, table moves, integer claimedScore, number clientElapsed)
+        -- Pure validation + replay rescore with NO side effects (no PB write, no leaderboard).
+        -- Returns { accepted = boolean, finalScore = integer, reason = string }.
         local session = _SeedService:GetSession(token)
 
         -- (1) token exists and belongs to the caller.
         if session == nil or session.userId ~= userId then
             log_warning("[SCORE] reject bad_token userId=" .. tostring(userId) .. " token=" .. tostring(token))
-            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "bad_token" }
+            return { accepted = false, finalScore = 0, reason = "bad_token" }
         end
 
         -- (2) single-use: not yet consumed; consume now (atomic in single-threaded @Logic).
         if session.consumed == true then
             log_warning("[SCORE] reject already token=" .. token)
-            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "already" }
+            return { accepted = false, finalScore = 0, reason = "already" }
         end
         _SeedService:MarkConsumed(token)
 
@@ -63,27 +64,40 @@ script ScoreService extends Logic
         local windowMax = self.GAME_SECONDS + self.GRACE_SECONDS
         if serverElapsed < 0 or serverElapsed > windowMax then
             log_warning("[SCORE] reject timing(server) elapsed=" .. tostring(serverElapsed))
-            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "timing" }
+            return { accepted = false, finalScore = 0, reason = "timing" }
         end
 
         -- (4) payload shape + client-time-window sanity.
         local pay = self:ValidatePayload(session, moves, clientElapsed)
         if not pay.ok then
             log_warning("[SCORE] reject payload reason=" .. pay.reason)
-            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = pay.reason }
+            return { accepted = false, finalScore = 0, reason = pay.reason }
         end
 
         -- (5) replay is the only source of truth for the score.
         local r = _PuzzleCore:Replay(session.seed, moves)
         if not (r.ok and r.score == claimedScore) then
             log_warning("[SCORE] reject replay_mismatch ok=" .. tostring(r.ok) .. " replayScore=" .. tostring(r.score) .. " claimed=" .. tostring(claimedScore))
-            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = "replay_mismatch" }
+            return { accepted = false, finalScore = 0, reason = "replay_mismatch" }
+        end
+
+        return { accepted = true, finalScore = r.score, reason = "ok" }
+    end
+
+    @ExecSpace("ServerOnly")
+    method table SubmitFor(string userId, string token, table moves, integer claimedScore, number clientElapsed)
+        -- Thin wrapper: delegates validation to ValidateRun, then applies side effects on accept.
+        local v = self:ValidateRun(userId, token, moves, claimedScore, clientElapsed)
+
+        if not v.accepted then
+            return { accepted = false, finalScore = 0, personalBest = _RankAttemptStore:GetPersonalBest(userId), reason = v.reason }
         end
 
         -- Accept: single-mode updates the keep-max personal best; ranked NEVER pollutes it
         -- (ranked still reads the stored single best so the result popup can show it read-only),
         -- and (ranked) fans out to the leaderboard (Plan 3 seam).
-        local finalScore = r.score
+        local session = _SeedService:GetSession(token)
+        local finalScore = v.finalScore
         if session.mode == "single" then
             _RankAttemptStore:SetPersonalBestIfHigher(userId, finalScore)
         end

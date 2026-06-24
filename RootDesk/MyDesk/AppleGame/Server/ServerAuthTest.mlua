@@ -224,8 +224,8 @@ script ServerAuthTest extends Logic
 
     @ExecSpace("ServerOnly")
     method void TestRankedSeam()
-        -- Proves a ranked ACCEPT does not crash on the absent _LeaderboardService and logs the [SEAM]
-        -- warning instead. Clears today's ranked attempt FIRST so the accept path runs on every call
+        -- Proves a ranked ACCEPT succeeds and fans out to the installed _LeaderboardService (Plan 3).
+        -- Clears today's ranked attempt FIRST so the accept path runs on every call
         -- (RunAll's earlier TestSeedIssuance otherwise consumes the one-shot daily attempt, which made
         -- this proof unreachable in-suite and dependent on a manual key reset).
         local uid = self:LocalUserId()
@@ -246,7 +246,7 @@ script ServerAuthTest extends Logic
             local res = _ScoreService:SubmitFor(uid, r.token, { mv }, 2, 5.0)
             -- Accept must succeed even though _LeaderboardService is absent (guarded seam logs a warning).
             self:Expect("seam_ranked_accepts", res.accepted == true and res.reason == "ok")
-            self:Expect("seam_leaderboard_absent", _LeaderboardService == nil)  -- Plan 3 not installed yet
+            self:Expect("seam_leaderboard_present", _LeaderboardService ~= nil)  -- Plan 3 (LeaderboardService) IS installed; ranked accept fans out to it
             -- pbBefore is forced to 0 < finalScore(2); a wrongful keep-max write would make pbAfter==2.
             local pbAfter = _RankAttemptStore:GetPersonalBest(uid)
             self:Expect("ranked_does_not_alter_pb", pbAfter == pbBefore and pbAfter == 0)
