@@ -4,8 +4,7 @@ script MatchHudController extends Logic
 
     -- UI refs injected by UIBuilder bind step (placeholder UUIDs until then).
     property Entity panel = "0adeef25-95fd-4644-ad17-a0b7482bee87"
-    property Entity rowTemplate = "02a63e9e-513d-4822-aba3-f00865cd4449"
-    property Entity listRoot = "0d8ea5f9-c7b6-4ed2-969d-92e3912e8f6d"
+    property Entity rowTemplate = "9893c7ea-a983-4a24-aecd-16a73b25ee2e"
 
     -- Cloned row entities; `any` is required (mlua has no untyped instance field list).
     property any rows = nil
@@ -47,7 +46,7 @@ script MatchHudController extends Logic
 
         -- Determine the local player's UserId for highlight (client-only; nil on server).
         local localUserId = ""
-        if isvalid(_UserService.LocalPlayer) then
+        if _UserService ~= nil and isvalid(_UserService.LocalPlayer) then
             local pc = _UserService.LocalPlayer.PlayerComponent
             if isvalid(pc) then
                 localUserId = pc.UserId
@@ -62,11 +61,9 @@ script MatchHudController extends Logic
         end
         table.sort(idx, function(a, b) return scores[a] > scores[b] end)
 
-        -- Clone RowTemplate for each entry in sorted order.
-        local cloneParent = self.listRoot
-        if not isvalid(cloneParent) then
-            cloneParent = self.rowTemplate
-        end
+        -- Clone RowTemplate for each entry in sorted order. The ScrollLayoutGroupComponent on
+        -- ListRoot (RowTemplate's parent) auto-arranges the clones vertically (canonical Leaderboard
+        -- pattern); Clone() reparents to RowTemplate's parent, so no explicit positioning is needed.
         for rank, srcIdx in ipairs(idx) do
             local row = self.rowTemplate:Clone("HudRow_" .. tostring(rank))
             if isvalid(row) then

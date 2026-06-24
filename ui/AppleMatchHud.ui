@@ -549,7 +549,7 @@
       {
         "id": "0d8ea5f9-c7b6-4ed2-969d-92e3912e8f6d",
         "path": "/ui/AppleMatchHud/Panel/ListRoot",
-        "componentNames": "MOD.Core.UITransformComponent",
+        "componentNames": "MOD.Core.UITransformComponent,MOD.Core.ScrollLayoutGroupComponent",
         "jsonString": {
           "name": "ListRoot",
           "path": "/ui/AppleMatchHud/Panel/ListRoot",
@@ -626,24 +626,78 @@
                 "z": 1
               },
               "Enable": true
+            },
+            {
+              "@type": "MOD.Core.ScrollLayoutGroupComponent",
+              "CellSize": {
+                "x": 280,
+                "y": 40
+              },
+              "ChildAlignment": 0,
+              "Constraint": 0,
+              "ConstraintCount": 1,
+              "GridChildAlignment": 0,
+              "GridSpacing": {
+                "x": 0,
+                "y": 0
+              },
+              "HorizontalScrollBarDirection": 0,
+              "IgnoreMapLayerCheck": false,
+              "OrderInLayer": 0,
+              "OverrideSorting": false,
+              "Padding": {
+                "left": 0,
+                "right": 0,
+                "top": 0,
+                "bottom": 0
+              },
+              "ReverseArrangement": false,
+              "ScrollBarBackgroundColor": {
+                "r": 1,
+                "g": 1,
+                "b": 1,
+                "a": 0.4
+              },
+              "ScrollBarBgImageRUID": {
+                "DataId": ""
+              },
+              "ScrollBarHandleColor": {
+                "r": 0.5,
+                "g": 0.5,
+                "b": 0.5,
+                "a": 1
+              },
+              "ScrollBarHandleImageRUID": {
+                "DataId": ""
+              },
+              "ScrollBarThickness": 20,
+              "ScrollBarVisible": 2,
+              "SortingLayer": "UI",
+              "Spacing": 4,
+              "StartAxis": 0,
+              "StartCorner": 0,
+              "Type": 1,
+              "UseScroll": true,
+              "VerticalScrollBarDirection": 0,
+              "Enable": true
             }
           ],
           "@version": 1
         }
       },
       {
-        "id": "02a63e9e-513d-4822-aba3-f00865cd4449",
-        "path": "/ui/AppleMatchHud/Panel/RowTemplate",
+        "id": "9893c7ea-a983-4a24-aecd-16a73b25ee2e",
+        "path": "/ui/AppleMatchHud/Panel/ListRoot/RowTemplate",
         "componentNames": "MOD.Core.UITransformComponent",
         "jsonString": {
           "name": "RowTemplate",
-          "path": "/ui/AppleMatchHud/Panel/RowTemplate",
+          "path": "/ui/AppleMatchHud/Panel/ListRoot/RowTemplate",
           "nameEditable": true,
           "enable": true,
           "visible": true,
           "localize": true,
-          "displayOrder": 2,
-          "pathConstraints": "////",
+          "displayOrder": 0,
+          "pathConstraints": "/////",
           "revision": 0,
           "origin": {
             "type": "Model",
@@ -668,12 +722,12 @@
               },
               "MobileOnly": false,
               "OffsetMax": {
-                "x": 290,
-                "y": -46
+                "x": 280,
+                "y": 0
               },
               "OffsetMin": {
-                "x": 10,
-                "y": -86
+                "x": 0,
+                "y": -40
               },
               "Pivot": {
                 "x": 0,
@@ -691,8 +745,8 @@
               },
               "UIVersion": 2,
               "anchoredPosition": {
-                "x": 10,
-                "y": -46
+                "x": 0,
+                "y": 0
               },
               "Position": {
                 "x": 0,
@@ -717,18 +771,18 @@
         }
       },
       {
-        "id": "2e41541b-6ff1-447f-b355-fdc04b84c009",
-        "path": "/ui/AppleMatchHud/Panel/RowTemplate/Name",
+        "id": "fc44b347-5039-4ba7-88a8-446771047206",
+        "path": "/ui/AppleMatchHud/Panel/ListRoot/RowTemplate/Name",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
           "name": "Name",
-          "path": "/ui/AppleMatchHud/Panel/RowTemplate/Name",
+          "path": "/ui/AppleMatchHud/Panel/ListRoot/RowTemplate/Name",
           "nameEditable": true,
           "enable": true,
           "visible": true,
           "localize": true,
           "displayOrder": 0,
-          "pathConstraints": "/////",
+          "pathConstraints": "//////",
           "revision": 0,
           "origin": {
             "type": "Model",
@@ -920,18 +974,18 @@
         }
       },
       {
-        "id": "7cc01e34-3323-4f98-aabe-66ed4effb8a4",
-        "path": "/ui/AppleMatchHud/Panel/RowTemplate/Score",
+        "id": "accca50d-4079-4795-a615-f1d89e2d0ed7",
+        "path": "/ui/AppleMatchHud/Panel/ListRoot/RowTemplate/Score",
         "componentNames": "MOD.Core.UITransformComponent,MOD.Core.SpriteGUIRendererComponent,MOD.Core.TextComponent",
         "jsonString": {
           "name": "Score",
-          "path": "/ui/AppleMatchHud/Panel/RowTemplate/Score",
+          "path": "/ui/AppleMatchHud/Panel/ListRoot/RowTemplate/Score",
           "nameEditable": true,
           "enable": true,
           "visible": true,
           "localize": true,
           "displayOrder": 1,
-          "pathConstraints": "/////",
+          "pathConstraints": "//////",
           "revision": 0,
           "origin": {
             "type": "Model",
