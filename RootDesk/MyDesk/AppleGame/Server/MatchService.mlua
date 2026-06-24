@@ -54,13 +54,24 @@ script MatchService extends Logic
             self:FormMatch(queuedUsers)
         end
 
-        -- Step 2: advance each existing match through the FSM.
+        -- Step 2: advance each existing match through the FSM. Collect matches that reach
+        -- settlement and process them AFTER this loop — never remove entries from
+        -- self._T.matches while iterating it, and keep Task 7's yielding settlement writes
+        -- (ValidateRun / ApplyMatchResult / SubmitRating all AndWait) outside the traversal.
+        local toSettle = {}
         for matchId, match in pairs(self._T.matches) do
             if match.state == "COUNTDOWN" then
                 self:TickCountdown(match)
             elseif match.state == "RACING" then
-                self:TickRacing(match)
+                if self:TickRacing(match) then
+                    table.insert(toSettle, match)
+                end
             end
+        end
+
+        -- Step 3: settle finished matches outside the iteration above.
+        for _, match in ipairs(toSettle) do
+            self:SettleMatch(match)
         end
     end
 
@@ -148,8 +159,10 @@ script MatchService extends Logic
         -- Decrement the tick counter; dispatch OnCountdown each tick; enter RACING at 0.
         -- match.countdown starts at COUNTDOWN (3) and decrements each tick.
         if match.countdown > 0 then
-            log("[Match] countdown matchId=" .. match.id .. " n=" .. tostring(match.countdown))
-            local n = match.countdown
+            -- Floor to an integer so the server log and the integer `n` RPC param agree (the
+            -- COUNTDOWN property is declared `number` per the brief; cast at the dispatch boundary).
+            local n = math.floor(match.countdown)
+            log("[Match] countdown matchId=" .. match.id .. " n=" .. tostring(n))
             for _, uid in ipairs(match.roster) do
                 self:OnCountdown(match.id, n, uid)
             end
@@ -177,8 +190,12 @@ script MatchService extends Logic
     -- RACING TICK
     -- -------------------------------------------------------------------------
 
-    method void TickRacing(table match)
-        -- Increment race elapsed; check deadline; check if all finished.
+    method boolean TickRacing(table match)
+        -- Increment race elapsed; return true when the match has reached settlement (all members
+        -- finished, or RACE_DEADLINE hit). The caller (Tick) settles it AFTER the iteration so the
+        -- registry mutation + Task 7's yielding writes never run inside the pairs() traversal.
+        -- Does NOT set `settled` — SettleMatch owns that flag and sets it just before its yielding
+        -- persist calls (plan §2.5), so this return must NOT pre-trip the re-entry guard.
         match.raceElapsed = match.raceElapsed + 1
 
         -- Check if all members have finished.
@@ -192,9 +209,9 @@ script MatchService extends Logic
 
         if allDone or match.raceElapsed >= self.RACE_DEADLINE then
             match.state = "FINISHED"
-            match.settled = true
-            self:SettleMatch(match)
+            return true
         end
+        return false
     end
 
     -- -------------------------------------------------------------------------
@@ -203,10 +220,20 @@ script MatchService extends Logic
 
     @ExecSpace("ServerOnly")
     method void SettleMatch(table match)
-        -- [Task7] settlement fills here — ELO computation, persist, OnMatchResult fan-out,
-        -- ReleaseVenue, and registry cleanup all live in Task 7.
+        -- Single settlement entry point. Re-entry guard FIRST: a match settles exactly once.
+        -- Set `settled` BEFORE any yielding persist call (plan §2.5) so a tick that fires during
+        -- Task 7's AndWait writes (ValidateRun / ApplyMatchResult / SubmitRating) cannot re-enter.
+        if match.settled then return end
+        match.settled = true
+
         log("[Match] settle stub matchId=" .. match.id)
-        -- Clean up registry entries for each roster member.
+        -- [Task7] settlement fills here — for each finished run ValidateRun -> finalScores;
+        --   winner = max finalScore (equal-top => draw); ComputeDelta (ELO) per member;
+        --   MatchRatingStore:ApplyMatchResult; LeaderboardService:SubmitRating(newRating);
+        --   scoped OnMatchResult per recipient; MatchVenue:ReleaseVenue.
+        --   ALL of that goes ABOVE the registry cleanup below (cleanup must stay last).
+
+        -- Registry cleanup (stays at the end of settlement).
         for _, uid in ipairs(match.roster) do
             self._T.userToMatch[uid] = nil
         end
@@ -224,9 +251,14 @@ script MatchService extends Logic
             log("[Match] EnqueueMatch rejected — invalid mode=" .. tostring(mode) .. " userId=" .. senderUserId)
             return
         end
-        -- Idempotent: already in a match or already queued — ignore.
+        -- Idempotent: already in a match — ignore.
         if self._T.userToMatch[senderUserId] ~= nil then
             log("[Match] EnqueueMatch ignored — already in match userId=" .. senderUserId)
+            return
+        end
+        -- Idempotent: already queued — ignore (avoids a duplicate "[Match] queued" log line).
+        if self._T.queue[senderUserId] ~= nil then
+            log("[Match] EnqueueMatch ignored — already queued userId=" .. senderUserId)
             return
         end
         self._T.queue[senderUserId] = true
