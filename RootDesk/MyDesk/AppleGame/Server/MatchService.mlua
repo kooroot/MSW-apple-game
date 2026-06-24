@@ -1,0 +1,339 @@
+@Logic
+script MatchService extends Logic
+    -- Server-authoritative matchmaking, match registry, and per-match FSM.
+    -- FSM states: IDLE -> QUEUED -> MATCHED -> COUNTDOWN -> RACING -> FINISHED -> RESULTS -> IDLE
+    -- Driven by a 1 Hz server tick (SetTimerRepeat). Settlement (ELO, persist, result fan-out)
+    -- is Task 7 — only stubs are provided here.
+    property integer MATCH_SIZE = 1
+    property number RACE_DEADLINE = 125
+    property number COUNTDOWN = 3
+    property integer tickTimerId = 0
+
+    method void OnBeginPlay()
+        -- Guard: @Logic lifecycle runs on both server and client. Server-only state init.
+        if not self:IsServer() then return end
+        -- `_T` is MSW's per-instance non-synced temp store: assign FIELD-WISE. A wholesale
+        -- `self._T = {...}` is silently dropped by the proxy (leaves queue/matches/... nil),
+        -- so initialize each field individually — same idiom as SeedService._T.sessions.
+        self._T.queue        = {}
+        self._T.matches      = {}
+        self._T.userToMatch  = {}
+        self._T.nextMatchSeq = 0
+        self.tickTimerId = _TimerService:SetTimerRepeat(function() self:Tick() end, 1.0)
+        log("[Match] MatchService OnBeginPlay — tick timer started id=" .. tostring(self.tickTimerId))
+    end
+
+    method void OnEndPlay()
+        -- Clear the repeat timer. Runs on both sides; ClearTimer on id=0 is a safe no-op.
+        if self.tickTimerId ~= 0 then
+            _TimerService:ClearTimer(self.tickTimerId)
+            self.tickTimerId = 0
+        end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- FSM TICK (1 Hz, server only)
+    -- -------------------------------------------------------------------------
+
+    method void Tick()
+        -- Guard: the timer callback fires on both server and client in a @Logic.
+        if not self:IsServer() then return end
+
+        -- Step 1: drain the queue — pop up to MATCH_SIZE users into a new match.
+        local queuedUsers = {}
+        for uid, _ in pairs(self._T.queue) do
+            table.insert(queuedUsers, uid)
+            if #queuedUsers >= self.MATCH_SIZE then break end
+        end
+
+        if #queuedUsers >= self.MATCH_SIZE then
+            -- Remove from queue before formation (avoids double-enqueue).
+            for _, uid in ipairs(queuedUsers) do
+                self._T.queue[uid] = nil
+            end
+            self:FormMatch(queuedUsers)
+        end
+
+        -- Step 2: advance each existing match through the FSM.
+        for matchId, match in pairs(self._T.matches) do
+            if match.state == "COUNTDOWN" then
+                self:TickCountdown(match)
+            elseif match.state == "RACING" then
+                self:TickRacing(match)
+            end
+        end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- MATCH FORMATION
+    -- -------------------------------------------------------------------------
+
+    method void FormMatch(table roster)
+        -- Mint matchId, seed, venue; issue per-member tokens; fan OnMatchFound.
+        -- Called from Tick (server only guard is on Tick itself).
+        self._T.nextMatchSeq = self._T.nextMatchSeq + 1
+        local matchId = "m_" .. tostring(self._T.nextMatchSeq)
+
+        -- Mint the shared seed once for the whole match (distinct salt 0xC3C3C3C3 inside SeedService).
+        local sharedSeed = _SeedService:NewMatchSeed(matchId)
+        log("[Match] formed matchId=" .. matchId .. " roster=" .. tostring(#roster))
+        log("[Match] sharedSeed=" .. tostring(sharedSeed))
+
+        -- Allocate and place users in venue (logical no-op in Maker default).
+        local handle = _MatchVenue:AllocateVenue(matchId, roster)
+        _MatchVenue:PlaceUsers(handle, roster)
+
+        -- Build rosterSet and issue per-member tokens.
+        local rosterSet = {}
+        local tokens    = {}
+        local scores    = {}
+        local finished  = {}
+        local names     = {}
+        local submissions = {}
+        for slot, uid in ipairs(roster) do
+            rosterSet[uid] = slot
+            local issued = _SeedService:IssueSharedFor(matchId, uid, sharedSeed)
+            tokens[uid] = issued.token
+            scores[uid] = 0
+            finished[uid] = false
+            submissions[uid] = nil
+
+            -- Capture display name; fallback to userId for synthetic/offline players.
+            local nm = uid
+            local ent = _UserService.UserEntities[uid]
+            if ent ~= nil and ent.PlayerComponent ~= nil then
+                nm = ent.PlayerComponent.Nickname
+            end
+            names[uid] = nm
+        end
+
+        local match = {
+            id          = matchId,
+            roster      = roster,
+            rosterSet   = rosterSet,
+            sharedSeed  = sharedSeed,
+            state       = "COUNTDOWN",
+            scores      = scores,
+            finished    = finished,
+            tokens      = tokens,
+            names       = names,
+            submissions = submissions,
+            countdown   = self.COUNTDOWN,
+            raceElapsed = 0,
+            settled     = false,
+        }
+        self._T.matches[matchId] = match
+        for _, uid in ipairs(roster) do
+            self._T.userToMatch[uid] = matchId
+        end
+
+        -- Build rosterNames array parallel to roster for RPC fan-out.
+        local rosterNames = {}
+        for i, uid in ipairs(roster) do
+            rosterNames[i] = names[uid]
+        end
+
+        -- Scoped fan-out: send OnMatchFound to each member individually.
+        for _, uid in ipairs(roster) do
+            local mySlot = rosterSet[uid]
+            self:OnMatchFound(matchId, rosterNames, mySlot, uid)
+        end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- COUNTDOWN TICK
+    -- -------------------------------------------------------------------------
+
+    method void TickCountdown(table match)
+        -- Decrement the tick counter; dispatch OnCountdown each tick; enter RACING at 0.
+        -- match.countdown starts at COUNTDOWN (3) and decrements each tick.
+        if match.countdown > 0 then
+            log("[Match] countdown matchId=" .. match.id .. " n=" .. tostring(match.countdown))
+            local n = match.countdown
+            for _, uid in ipairs(match.roster) do
+                self:OnCountdown(match.id, n, uid)
+            end
+            match.countdown = match.countdown - 1
+        else
+            -- Countdown finished — enter RACING.
+            match.state = "RACING"
+            match.raceElapsed = 0
+            log("[Match] start matchId=" .. match.id .. " seed=" .. tostring(match.sharedSeed))
+
+            -- Build rosterNames parallel array.
+            local rosterNames = {}
+            for i, uid in ipairs(match.roster) do
+                rosterNames[i] = match.names[uid]
+            end
+
+            -- Scoped fan-out: each member gets their own token.
+            for _, uid in ipairs(match.roster) do
+                self:OnMatchStart(match.id, match.sharedSeed, match.tokens[uid], rosterNames, uid)
+            end
+        end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- RACING TICK
+    -- -------------------------------------------------------------------------
+
+    method void TickRacing(table match)
+        -- Increment race elapsed; check deadline; check if all finished.
+        match.raceElapsed = match.raceElapsed + 1
+
+        -- Check if all members have finished.
+        local allDone = true
+        for _, uid in ipairs(match.roster) do
+            if not match.finished[uid] then
+                allDone = false
+                break
+            end
+        end
+
+        if allDone or match.raceElapsed >= self.RACE_DEADLINE then
+            match.state = "FINISHED"
+            match.settled = true
+            self:SettleMatch(match)
+        end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- SETTLEMENT STUB (Task 7 fills this)
+    -- -------------------------------------------------------------------------
+
+    @ExecSpace("ServerOnly")
+    method void SettleMatch(table match)
+        -- [Task7] settlement fills here — ELO computation, persist, OnMatchResult fan-out,
+        -- ReleaseVenue, and registry cleanup all live in Task 7.
+        log("[Match] settle stub matchId=" .. match.id)
+        -- Clean up registry entries for each roster member.
+        for _, uid in ipairs(match.roster) do
+            self._T.userToMatch[uid] = nil
+        end
+        self._T.matches[match.id] = nil
+    end
+
+    -- -------------------------------------------------------------------------
+    -- INBOUND @Server RPCs
+    -- -------------------------------------------------------------------------
+
+    @ExecSpace("Server")
+    method void EnqueueMatch(string mode)
+        -- Client -> server: add senderUserId to the matchmaking queue.
+        if mode ~= "multi" then
+            log("[Match] EnqueueMatch rejected — invalid mode=" .. tostring(mode) .. " userId=" .. senderUserId)
+            return
+        end
+        -- Idempotent: already in a match or already queued — ignore.
+        if self._T.userToMatch[senderUserId] ~= nil then
+            log("[Match] EnqueueMatch ignored — already in match userId=" .. senderUserId)
+            return
+        end
+        self._T.queue[senderUserId] = true
+        log("[Match] queued userId=" .. senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void CancelQueue()
+        -- Client -> server: remove senderUserId from the queue.
+        self._T.queue[senderUserId] = nil
+        log("[Match] CancelQueue userId=" .. senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void ReportLiveScore(string matchId, integer score)
+        -- Client -> server: update cosmetic live score for senderUserId in matchId.
+        -- Verify membership before mutating (Constraint 5).
+        local match = self._T.matches[matchId]
+        if match == nil then return end
+        if match.rosterSet[senderUserId] == nil then
+            log("[Match] ReportLiveScore rejected — not in roster userId=" .. senderUserId .. " matchId=" .. matchId)
+            return
+        end
+        if match.state ~= "RACING" then return end
+
+        -- Clamp to >= 0 and enforce monotonic increase.
+        local clamped = math.max(0, score)
+        local stored = match.scores[senderUserId] or 0
+        match.scores[senderUserId] = math.max(stored, clamped)
+
+        -- Fan scoped OnLiveScoreboard to every match member.
+        local names  = {}
+        local scores = {}
+        local userIds = {}
+        for i, uid in ipairs(match.roster) do
+            names[i]   = match.names[uid]
+            scores[i]  = match.scores[uid]
+            userIds[i] = uid
+        end
+        for _, uid in ipairs(match.roster) do
+            self:OnLiveScoreboard(matchId, names, scores, userIds, uid)
+        end
+    end
+
+    @ExecSpace("Server")
+    method void ReportFinished(string matchId, string token, table moves, integer claimedScore, number clientElapsed)
+        -- Client -> server STUB for Task 6: verify membership, store submission, mark finished.
+        -- [Task7] settlement fills here — ELO, replay validation, OnMatchResult fan-out.
+        local match = self._T.matches[matchId]
+        if match == nil then return end
+        if match.rosterSet[senderUserId] == nil then
+            log("[Match] ReportFinished rejected — not in roster userId=" .. senderUserId .. " matchId=" .. matchId)
+            return
+        end
+        -- Store submission payload for Task 7 to validate and score.
+        match.submissions[senderUserId] = {
+            token          = token,
+            moves          = moves,
+            claimedScore   = claimedScore,
+            clientElapsed  = clientElapsed,
+        }
+        match.finished[senderUserId] = true
+        log("[Match] finished userId=" .. senderUserId .. " matchId=" .. matchId .. " claimedScore=" .. tostring(claimedScore))
+        -- [Task7] settlement fills here
+    end
+
+    -- -------------------------------------------------------------------------
+    -- OUTBOUND @Client RPCs (scoped — targetUserId appended as last call-site arg)
+    -- -------------------------------------------------------------------------
+
+    @ExecSpace("Client")
+    method void OnMatchFound(string matchId, table rosterNames, integer mySlot)
+        -- Server -> one client: notifies this player their match was formed.
+        log("[Match] OnMatchFound matchId=" .. tostring(matchId) .. " mySlot=" .. tostring(mySlot))
+        -- [Task9/10 bridge] _MatchmakingController does not exist yet (Task 9 creates it).
+        if _MatchmakingController ~= nil then
+            _MatchmakingController:OnMatchFound(rosterNames, mySlot)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnCountdown(string matchId, integer n)
+        -- Server -> one client: countdown tick notification.
+        log("[Match] OnCountdown matchId=" .. tostring(matchId) .. " n=" .. tostring(n))
+        -- [Task9/10 bridge] _MatchmakingController does not exist yet (Task 9 creates it).
+        if _MatchmakingController ~= nil then
+            _MatchmakingController:OnCountdown(matchId, n)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnMatchStart(string matchId, integer seed, string token, table rosterNames)
+        -- Server -> one client: match is starting; delivers seed and this player's token.
+        log("[Match] OnMatchStart matchId=" .. tostring(matchId) .. " seed=" .. tostring(seed))
+        -- [Task9/10 bridge] _MatchmakingController does not exist yet (Task 9 creates it).
+        if _MatchmakingController ~= nil then
+            _MatchmakingController:OnMatchStart(matchId, seed, token, rosterNames)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnLiveScoreboard(string matchId, table names, table scores, table userIds)
+        -- Server -> one client: updated parallel arrays for the live scoreboard HUD.
+        -- [Task9/10 bridge] _MatchHudController does not exist yet (Task 10 creates it).
+        if _MatchHudController ~= nil then
+            _MatchHudController:OnLiveScoreboard(matchId, names, scores, userIds)
+        end
+    end
+
+end
