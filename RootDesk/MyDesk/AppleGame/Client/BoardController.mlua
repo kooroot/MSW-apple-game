@@ -18,6 +18,10 @@ script BoardController extends Logic
     property any cellText = nil
     property boolean cached = false
 
+    -- [Tile-skin K2] Cached resolved style { name, tileRUID, numberColor, outlineColor } for the active
+    -- skin, so a 170-cell repaint resolves SkinService+AssetCatalog once. RefreshSkinStyle() clears it.
+    property any skinStyle = nil
+
     -- Drag-input state, populated by BindInput at runtime. `any` because these hold a live grid,
     -- a {col,row} table, a callback, and EventHandlerBase values that are not @Sync'd
     -- (EventHandlerBase must be `any`, msw-scripting §5). touchPanel is `any` so its default is nil.
@@ -62,28 +66,74 @@ script BoardController extends Logic
         self.cached = true
     end
 
+    method table CurrentSkinStyle()
+        -- Resolves + caches the active skin's style { name, tileRUID, numberColor, outlineColor } from
+        -- SkinService (current selection) + AssetCatalog (registry). Cached so a full repaint resolves
+        -- once; RefreshSkinStyle() invalidates it on a skin change. nil only if AssetCatalog is absent.
+        if self.skinStyle == nil then
+            local id = 1
+            if _SkinService ~= nil then id = _SkinService:CurrentSkin() end
+            if _AssetCatalog ~= nil then self.skinStyle = _AssetCatalog:SkinStyle(id) end
+        end
+        return self.skinStyle
+    end
+
+    method void RefreshSkinStyle()
+        -- Drops the cached skin style so the next paint re-resolves the current selection.
+        self.skinStyle = nil
+    end
+
+    method void ApplySkin()
+        -- Repaints the currently-shown board with the active skin (tile sprite + number recolor).
+        -- No-op when no board is up yet (a skin chosen on the title applies on the next RenderBoard).
+        self:RefreshSkinStyle()
+        if not self.cached then return end
+        if self.liveGrid == nil then return end
+        for r = 0, self.ROWS - 1 do
+            for c = 0, self.COLS - 1 do
+                local v = 0
+                if self.liveGrid[r] ~= nil and self.liveGrid[r][c] ~= nil then v = self.liveGrid[r][c] end
+                self:SetCellValue(r, c, v)
+            end
+        end
+        log("[BoardController] skin applied")
+    end
+
     method void SetCellValue(integer row, integer col, integer value)
-        -- Repaints one cell: value 1..9 shows the number, value 0 hides the cell. Self-caches so
-        -- it is safe to call directly (e.g. after a clear) before any RenderBoard.
+        -- Repaints one cell: value 1..9 shows the active skin's tile sprite + the number, value 0 hides
+        -- the cell. Self-caches so it is safe to call directly (e.g. after a clear) before any RenderBoard.
         self:CacheCells()
         local spRow = self.cellSprite[row]
         if spRow == nil then return end
         local sp = spRow[col]
         if not isvalid(sp) then return end
         sp.Enable = value > 0
-        if value > 0 and _AssetCatalog ~= nil then
-            -- Apply the apple sprite for this value. ImageRUID is a DataRef (see .d.mlua); at RUNTIME
-            -- it must be assigned a DataRef(ruid) object -- a plain { DataId = ruid } Lua table (the
-            -- builder/JSON serialization form) is silently rejected and the cell keeps its placeholder.
-            -- RUID 263b7db3... is a `sprite`, so no thumbnail:// prefix. IconRUID(value) maps every
-            -- 1..9 to the shared apple sprite -- the number text below distinguishes them.
-            sp.ImageRUID = DataRef(_AssetCatalog:IconRUID(value))
+        local style = nil
+        if value > 0 then style = self:CurrentSkinStyle() end
+        if value > 0 and style ~= nil then
+            -- Apply the active skin's tile sprite. ImageRUID is a DataRef (see .d.mlua): at RUNTIME it
+            -- must be a DataRef(ruid) object -- a plain { DataId = ruid } Lua table is silently rejected
+            -- and the cell keeps its placeholder. All skin tileRUIDs are `sprite` type (no thumbnail://).
+            -- Every value 1..9 shows the same tile; the recolored number text below distinguishes them.
+            sp.ImageRUID = DataRef(style.tileRUID)
         end
         local txRow = self.cellText[row]
         if txRow ~= nil then
             local tx = txRow[col]
             if isvalid(tx) then
-                if value > 0 then tx.Text = tostring(value) else tx.Text = "" end
+                if value > 0 then
+                    tx.Text = tostring(value)
+                    if style ~= nil then
+                        -- Per-skin readability: fill + outline chosen so the digit never blends into the
+                        -- tile art (light text + dark outline on dark/busy tiles, and the reverse on light).
+                        tx.FontColor = style.numberColor
+                        tx.UseOutLine = true
+                        tx.OutlineColor = style.outlineColor
+                        tx.OutlineWidth = 3
+                    end
+                else
+                    tx.Text = ""
+                end
             end
         end
     end
@@ -95,6 +145,7 @@ script BoardController extends Logic
             log("[BoardController] RenderBoard skipped: grid not ready (cache not built)")
             return
         end
+        self:RefreshSkinStyle()   -- re-resolve in case the skin changed since the last paint (e.g. on the title)
         for r = 0, self.ROWS - 1 do
             for c = 0, self.COLS - 1 do
                 local v = 0

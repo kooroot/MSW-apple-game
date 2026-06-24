@@ -1,0 +1,83 @@
+@Logic
+script SkinService extends Logic
+
+    -- [Tile-skin K2] Per-client active tile skin (1-based id into AssetCatalog's skin registry).
+    -- Cosmetic + per-player: NOT @Sync (each client renders its own board with its own skin). The
+    -- selection is persisted server-side in the user's UserDataStorage (DataStorage is ServerOnly),
+    -- loaded once on begin and saved on each change. AssetCatalog (the skin DATA) is ClientOnly, so
+    -- the server validates only a loose lower bound here; the client clamps to the real count on set.
+    property integer CurrentSkinId = 1
+    property string StorageKey = "tileSkin"
+
+    method void OnBeginPlay()
+        -- Client: pull this user's saved skin from the server (server-side OnBeginPlay does nothing,
+        -- since the storage read happens per-request). A @Logic OnBeginPlay runs on BOTH sides.
+        if self:IsClient() then
+            self:RequestLoadSkin()
+        end
+        log("[SkinService] ready")
+    end
+
+    method integer CurrentSkin()
+        -- Active skin id on THIS client (1-based). BoardController reads this when resolving a cell style.
+        return self.CurrentSkinId
+    end
+
+    @ExecSpace("ClientOnly")
+    method void SetSkin(integer skinId)
+        -- Client entry from the skin-select UI: clamp, apply to the board immediately, and persist.
+        -- Dirty check: an unchanged pick does nothing (no repaint, no DataStorage write — datastorage.md §0.2).
+        local id = skinId
+        if _AssetCatalog ~= nil then
+            local maxId = _AssetCatalog:SkinCount()
+            if id == nil or id < 1 or id > maxId then id = 1 end
+        elseif id == nil or id < 1 then
+            id = 1
+        end
+        if id == self.CurrentSkinId then return end
+        self.CurrentSkinId = id
+        if _BoardController ~= nil then _BoardController:ApplySkin() end
+        self:RequestSaveSkin(id)
+        log("[SkinService] skin set id=" .. tostring(id))
+    end
+
+    @ExecSpace("Server")
+    method void RequestLoadSkin()
+        -- Server: read the caller's saved tile-skin id from UserDataStorage and reply to that client.
+        -- NotFound/parse-failure falls back to skin 1. Event-driven (once per session), ServerOnly storage.
+        local uid = senderUserId
+        local storage = _DataStorageService:GetUserDataStorage(uid)
+        local err, raw = storage:GetAndWait(self.StorageKey)
+        local id = 1
+        if err == 0 and raw ~= nil and raw ~= "" then
+            local n = tonumber(raw)
+            if n ~= nil then id = math.floor(n) end
+        end
+        if id < 1 then id = 1 end
+        self:ReceiveSkin(id, uid)   -- targetUserId appended at call site
+    end
+
+    @ExecSpace("Client")
+    method void ReceiveSkin(integer skinId)
+        -- Server->caller: adopt the loaded skin and repaint the board if one is currently showing
+        -- (on the title screen there is no board yet; the next RenderBoard picks up CurrentSkinId).
+        self.CurrentSkinId = skinId
+        if _BoardController ~= nil then _BoardController:ApplySkin() end
+        log("[SkinService] skin loaded id=" .. tostring(skinId))
+    end
+
+    @ExecSpace("Server")
+    method void RequestSaveSkin(integer skinId)
+        -- Server: persist the caller's tile-skin choice to UserDataStorage. The client already clamped
+        -- to a valid id; the server stores it as a short string (1 credit). errorCode is logged on failure.
+        local uid = senderUserId
+        local id = skinId
+        if id < 1 then id = 1 end
+        local storage = _DataStorageService:GetUserDataStorage(uid)
+        local err = storage:SetAndWait(self.StorageKey, tostring(id))
+        if err ~= 0 then
+            log_warning("[SkinService] save failed err=" .. tostring(err) .. " uid=" .. tostring(uid))
+        end
+    end
+
+end

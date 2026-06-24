@@ -2,41 +2,44 @@
 @ExecSpace("ClientOnly")
 script AssetCatalog extends Logic
 
-    property string PlaceholderIcon = "1705e3c5b2c146ac9a699f96fb067408"
-
-    -- Icon RUID per cell value 1..9. The apple game (Fruit Box) uses one identical
-    -- apple tile for every value; the number text overlay (BoardController) distinguishes
-    -- them, so all nine map to the same apple sprite RUID.
-    property string Icon1 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon2 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon3 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon4 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon5 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon6 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon7 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon8 = "263b7db3067545a7acf7bbe5c3b61a4c"
-    property string Icon9 = "263b7db3067545a7acf7bbe5c3b61a4c"
+    -- [Tile-skin] Number of selectable tile skins (1-based ids 1..SkinCountValue). The board cell shows
+    -- the skin's tile sprite for every value 1..9; the number text overlay (BoardController) distinguishes
+    -- them, recolored per-skin for readability. See SkinStyle below for the registry.
+    property integer SkinCountValue = 12
 
     property string SfxClearRUID = "1b3f41dc6ed84a9a95732c2b620b6393"
     property string SfxFailRUID = "174d501eccd04eadbd6c6411d4ade7e7"
     property string SfxTickRUID = "778160a185c4464ea829b609d7afeea1"
     property string SfxClickRUID = "778160a185c4464ea829b609d7afeea1"
 
-    method string IconRUID(integer value)
-        -- Returns the icon RUID for a cell value (1..9), falling back to the placeholder so a cell is never invisible.
-        local r = ""
-        if value == 1 then r = self.Icon1
-        elseif value == 2 then r = self.Icon2
-        elseif value == 3 then r = self.Icon3
-        elseif value == 4 then r = self.Icon4
-        elseif value == 5 then r = self.Icon5
-        elseif value == 6 then r = self.Icon6
-        elseif value == 7 then r = self.Icon7
-        elseif value == 8 then r = self.Icon8
-        elseif value == 9 then r = self.Icon9
+    method integer SkinCount()
+        -- Number of selectable tile skins (ids 1..SkinCount). Used by the skin-select UI to iterate.
+        return self.SkinCountValue
+    end
+
+    method table SkinStyle(integer skinId)
+        -- [Tile-skin K1] Returns one skin's visual style: { name, tileRUID, numberColor, outlineColor }.
+        -- skinId is 1-based; an out-of-range/nil id falls back to skin 1 so a cell is never unstyled.
+        -- All tileRUIDs are `sprite` type (BoardController assigns via DataRef, no thumbnail:// prefix).
+        -- numberColor/outlineColor were chosen per sprite for digit readability (analyzed from each
+        -- thumbnail): near-white text + dark outline on dark/busy tiles, dark text + white outline on
+        -- light tiles, so the digit never blends into the artwork. Single registry — edit skins here.
+        local id = skinId
+        if id == nil or id < 1 or id > self.SkinCountValue then id = 1 end
+        if id == 1 then return { name = "로저의 사과", tileRUID = "014e7c98ad374cf49e7bf7ea72844241", numberColor = Color(1.000, 0.988, 0.902, 1.0), outlineColor = Color(0.157, 0.000, 0.000, 1.0) }
+        elseif id == 2 then return { name = "사과 단면", tileRUID = "2d5aff1792f84c4a9f7dd8fce2d675a0", numberColor = Color(0.157, 0.086, 0.047, 1.0), outlineColor = Color(1.000, 1.000, 1.000, 1.0) }
+        elseif id == 3 then return { name = "초록 사과", tileRUID = "ab4933da8d81455d8ea8f8ca532e40cf", numberColor = Color(1.000, 1.000, 1.000, 1.0), outlineColor = Color(0.000, 0.125, 0.000, 1.0) }
+        elseif id == 4 then return { name = "황금 사과", tileRUID = "11b59cb0411f4241b489be5808860faa", numberColor = Color(0.157, 0.102, 0.000, 1.0), outlineColor = Color(1.000, 1.000, 1.000, 1.0) }
+        elseif id == 5 then return { name = "핑크 테니", tileRUID = "8a16511b34624de3ace310194ab5b8c1", numberColor = Color(0.098, 0.078, 0.196, 1.0), outlineColor = Color(1.000, 1.000, 1.000, 1.0) }
+        elseif id == 6 then return { name = "팬더 테니", tileRUID = "18024331416c47c5838ebaa170e0ab9a", numberColor = Color(0.078, 0.078, 0.078, 1.0), outlineColor = Color(1.000, 1.000, 1.000, 1.0) }
+        elseif id == 7 then return { name = "돼지", tileRUID = "b085e5ed76a44817ba43b87da30b9fec", numberColor = Color(1.000, 1.000, 1.000, 1.0), outlineColor = Color(0.118, 0.000, 0.000, 1.0) }
+        elseif id == 8 then return { name = "블록퍼스", tileRUID = "c2cdc32d2d8e419dbc63b9979f702717", numberColor = Color(1.000, 1.000, 1.000, 1.0), outlineColor = Color(0.118, 0.000, 0.176, 1.0) }
+        elseif id == 9 then return { name = "슬라임", tileRUID = "0d7110ca8e3b435593f85dee553b3a71", numberColor = Color(1.000, 1.000, 1.000, 1.0), outlineColor = Color(0.000, 0.118, 0.000, 1.0) }
+        elseif id == 10 then return { name = "트릭스터", tileRUID = "c3886fcd469745d3b7ce9ec421ba57c9", numberColor = Color(1.000, 1.000, 1.000, 1.0), outlineColor = Color(0.000, 0.000, 0.000, 1.0) }
+        elseif id == 11 then return { name = "버섯", tileRUID = "ae5a3b3d40f34f6b8b8472d498848f7c", numberColor = Color(0.157, 0.094, 0.000, 1.0), outlineColor = Color(1.000, 1.000, 1.000, 1.0) }
+        elseif id == 12 then return { name = "옥토퍼스", tileRUID = "60c1de00f1154b5ca944c1d73634d243", numberColor = Color(1.000, 1.000, 1.000, 1.0), outlineColor = Color(0.098, 0.000, 0.098, 1.0) }
         end
-        if r == nil or r == "" then return self.PlaceholderIcon end
-        return r
+        return { name = "로저의 사과", tileRUID = "014e7c98ad374cf49e7bf7ea72844241", numberColor = Color(1.000, 0.988, 0.902, 1.0), outlineColor = Color(0.157, 0.000, 0.000, 1.0) }
     end
 
     method string SfxClear()
