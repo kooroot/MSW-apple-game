@@ -351,11 +351,10 @@ script MatchService extends Logic
         end
         log("[Match] settled matchId=" .. match.id .. " winner=" .. tostring(winnerName))
 
-        -- (e) Release venue.
-        _MatchVenue:ReleaseVenue(match.venueHandle)
-
-        -- (f) Scoped result fan-out per recipient (Constraint 5 + 7).
-        --     Build flat parallel arrays names/scores over match.roster.
+        -- (e) Scoped result fan-out per recipient (Constraint 5 + 7) — dispatch BEFORE releasing the
+        --     venue so the gated InstanceRoomVenue path (when USE_INSTANCE_ROOMS=true) cannot move
+        --     clients out of the room before they receive their result screen. No-op-safe for the
+        --     default LogicalVenue. Build flat parallel arrays names/scores over match.roster.
         local rosterNames  = {}
         local rosterScores = {}
         for i, uid in ipairs(match.roster) do
@@ -365,6 +364,9 @@ script MatchService extends Logic
         for _, uid in ipairs(match.roster) do
             self:OnMatchResult(match.id, winnerName, outcomes[uid], deltas[uid], newRatings[uid], rosterNames, rosterScores, uid)
         end
+
+        -- (f) Release venue (after results are dispatched).
+        _MatchVenue:ReleaseVenue(match.venueHandle)
 
         -- Registry cleanup (stays at the end of settlement).
         for _, uid in ipairs(match.roster) do
