@@ -68,7 +68,10 @@ script MatchVenue extends Logic
         -- Treat any non-false result as partial success; callers decide whether to abort.
         local movedCount = tonumber(moved) or 0
         log("[MatchVenue] MoveUsersToInstanceRoom handle=" .. handle .. " movedCount=" .. tostring(movedCount))
-        return movedCount >= 0   -- false only on hard pcall failure above
+        -- Policy: any non-crash counts as success at this layer (even 0 users moved is treated as "placed");
+        -- callers decide whether a partial move warrants abort. Only a hard pcall failure (handled above) returns false.
+        -- (`movedCount` is retained for the log line only; `ok` is the real success signal.)
+        return ok
     end
 
     @ExecSpace("ServerOnly")
@@ -90,6 +93,8 @@ script MatchVenue extends Logic
         -- first, then let the room self-destruct (no users = auto-destroy per MSW runtime).
         -- [GATED:instance-room] TODO confirm: does _RoomService expose a destroy API? Using MoveUsersToStaticRoom fallback.
         local ok1, err1 = pcall(function()
+            -- This pcall guards the FUTURE _RoomService destroy / move-out call; at publish time swap the
+            -- log() below for the real teardown (DestroyInstanceRoom, or MoveUsersToStaticRoom then auto-destroy).
             -- Move any remaining users out (room auto-destroys when empty).
             -- We don't have the user list here; this is best-effort cleanup.
             -- [GATED:instance-room] TODO: pass remaining roster if MatchService stores it, or query room membership.
