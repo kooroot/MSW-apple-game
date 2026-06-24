@@ -102,6 +102,25 @@ script SeedService extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method integer NewMatchSeed(string matchId)
+        -- Derives a server-unpredictable 32-bit seed for one match (called once per match by MatchService).
+        -- Salt 0xC3C3C3C3 is distinct from NewSingleSeed (0x3C3C3C3C), NewToken body/tag (0x5A/0xA5),
+        -- and the ranked daily path (Mix32(dateKey)), satisfying the distinct-salt constraint.
+        return self:MixEntropy(matchId, 0xC3C3C3C3)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table IssueSharedFor(string matchId, string userId, integer sharedSeed)
+        -- Mints a single-use token for userId bound to the caller-supplied sharedSeed (generated once
+        -- per match by NewMatchSeed). Multi mode is unlimited — no TryConsumeDaily call.
+        self:EnsureSessions()
+        local token = self:NewToken(userId)
+        self._T.sessions[token] = { userId = userId, seed = sharedSeed, dateKey = self:KstDateKey(), mode = "multi", matchId = matchId, issuedAt = DateTime.UtcNow, consumed = false }
+        log("[SEED] multi issued userId=" .. userId .. " matchId=" .. matchId .. " seed=" .. tostring(sharedSeed))
+        return { token = token, seed = sharedSeed }
+    end
+
+    @ExecSpace("ServerOnly")
     method table GetSession(string token)
         -- Returns the in-memory session record for a token, or nil if unknown/expired.
         self:EnsureSessions()
