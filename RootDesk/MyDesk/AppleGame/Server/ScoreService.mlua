@@ -4,6 +4,18 @@ script ScoreService extends Logic
     property number GRACE_SECONDS = 5.0
     property integer MAX_MOVES = 256
 
+    -- [SA-2 Phase S3] Anti-bot rate heuristics. A streamed board (S1/S2) stops offline pre-solve, but
+    -- a vision bot could still solve the on-screen board superhumanly fast. These bound the play RATE.
+    -- MIN_SECONDS_PER_MOVE is the human floor for one distinct sum-10 drag; the AUTHORITATIVE check
+    -- multiplies it by the move count and compares against serverElapsed (wall-clock from token
+    -- issuance to submit), which the client cannot fabricate. MIN_MOVE_INTERVAL / MAX_FAST_MOVES are a
+    -- SECONDARY client-timestamp burst guard (defeatable by a bot that fabricates spacing — kept only
+    -- to catch naive bots cheaply). MIN_MOVES_FOR_RATE_CHECK skips trivially short, rate-noisy runs.
+    property number MIN_SECONDS_PER_MOVE = 0.12
+    property integer MIN_MOVES_FOR_RATE_CHECK = 5
+    property number MIN_MOVE_INTERVAL = 0.05
+    property integer MAX_FAST_MOVES = 4
+
     @ExecSpace("ServerOnly")
     method table ValidatePayload(table session, table moves, number clientElapsed)
         -- Pure shape/time-window validation (no replay): count cap, coord ranges, monotonic timestamps, window.
@@ -19,6 +31,7 @@ script ScoreService extends Logic
         local maxCol = _PuzzleCore.COLS - 1
         local maxRow = _PuzzleCore.ROWS - 1
         local prevT = -1.0
+        local fastMoves = 0
         for i = 1, #moves do
             local m = moves[i]
             if type(m) ~= "table" or type(m.rect) ~= "table" then return { ok = false, reason = "bad_payload" } end
@@ -35,9 +48,29 @@ script ScoreService extends Logic
             if type(t) ~= "number" then return { ok = false, reason = "bad_payload" } end
             if t ~= t or t < 0 or t > windowMax then return { ok = false, reason = "timing" } end
             if t < prevT then return { ok = false, reason = "timing" } end   -- timestamps must be non-decreasing
+            -- [S3 secondary] count implausibly tight gaps between distinct clears (client-time burst guard).
+            if prevT >= 0 and (t - prevT) < self.MIN_MOVE_INTERVAL then fastMoves = fastMoves + 1 end
             prevT = t
         end
+        -- [S3 secondary] too many sub-interval gaps => mechanically generated input (naive bot). This is a
+        -- weak signal on its own (client timestamps are forgeable); the authoritative rate gate lives in
+        -- ValidateRun against serverElapsed.
+        if fastMoves > self.MAX_FAST_MOVES then return { ok = false, reason = "too_fast" } end
         return { ok = true, reason = "ok" }
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean IsRunTooFast(number serverElapsed, integer moveCount)
+        -- [SA-2 Phase S3] Pure rate-floor predicate: no side effects, fully deterministic, so it is
+        -- unit-testable in isolation (driving it through a live submit cannot reliably manufacture a
+        -- serverElapsed below the small floor — DataStorage round-trips between issuance and validation
+        -- add ~1s of unavoidable wall-clock). Returns true when completing `moveCount` distinct sum-10
+        -- drags within `serverElapsed` wall-clock seconds is faster than humanly possible (a human needs
+        -- >= MIN_SECONDS_PER_MOVE per drag). Runs shorter than MIN_MOVES_FOR_RATE_CHECK are too
+        -- rate-noisy to judge and are never "too fast". ValidateRun feeds the authoritative serverElapsed
+        -- (token issuance -> submit), which the client cannot forge.
+        if moveCount < self.MIN_MOVES_FOR_RATE_CHECK then return false end
+        return serverElapsed < moveCount * self.MIN_SECONDS_PER_MOVE
     end
 
     @ExecSpace("ServerOnly")
@@ -75,19 +108,29 @@ script ScoreService extends Logic
         end
 
         -- (5) replay is the only source of truth for the score.
-        -- [SA-2 accepted risk] For ranked/multi the seed is delivered to the client (so it can render
-        -- the board), and the board is deterministic — a determined client can therefore pre-compute
-        -- a near-optimal solve and submit a superhuman-but-replay-valid score. This is inherent to the
-        -- "client knows seed + replay-authoritative" design and acceptable for this casual scope; the
-        -- only true fix is server-side board streaming (a larger redesign). Replay fully defends the
-        -- STATED threat model (the score must equal a real solve of the seed — a fabricated/higher
-        -- claim is rejected); play-rate/optimality feasibility is a knowingly accepted gap, not an
-        -- oversight. A live-vs-final cross-check was rejected as false security (the client also drives
-        -- ReportLiveScore and could pace fake live scores to match).
+        -- [SA-2] The board is now STREAMED, not seed-derived (S1 single/ranked, S2 multi): the client
+        -- never learns the seed, so it cannot pre-solve offline before play begins. Replay defends the
+        -- core threat (the score must equal a real solve of the board — a fabricated/higher claim is
+        -- rejected). The remaining surface is an on-screen vision bot solving the visible board, which
+        -- step (6) below bounds by play RATE. A live-vs-final cross-check was rejected as false security
+        -- (the client also drives ReportLiveScore and could pace fake live scores to match).
         local r = _PuzzleCore:Replay(session.seed, moves)
         if not (r.ok and r.score == claimedScore) then
             log_warning("[SCORE] reject replay_mismatch ok=" .. tostring(r.ok) .. " replayScore=" .. tostring(r.score) .. " claimed=" .. tostring(claimedScore))
             return { accepted = false, finalScore = 0, reason = "replay_mismatch" }
+        end
+
+        -- (6) [SA-2 Phase S3] anti-bot rate floor. Replay above proved the score is a REAL solve; this
+        -- guards a bot that solves the streamed board superhumanly FAST. serverElapsed (wall-clock from
+        -- token issuance to submit) is authoritative — unlike the client move timestamps it cannot be
+        -- forged. A human performing `moveCount` distinct sum-10 drags needs >= MIN_SECONDS_PER_MOVE
+        -- each, so if the server saw the whole run complete faster than that, no human produced it.
+        -- (Honest ceiling: a bot that DELIBERATELY burns real wall-clock can still submit a perfect
+        -- score — but then it holds no speed advantage over a human; for a fully-observable board that
+        -- residual is unavoidable. This floor removes the realistic instant/burst-solve exploit.)
+        if self:IsRunTooFast(serverElapsed, #moves) then
+            log_warning("[SCORE] reject too_fast serverElapsed=" .. tostring(serverElapsed) .. " moves=" .. tostring(#moves) .. " floor=" .. tostring(#moves * self.MIN_SECONDS_PER_MOVE))
+            return { accepted = false, finalScore = 0, reason = "too_fast" }
         end
 
         return { accepted = true, finalScore = r.score, reason = "ok" }

@@ -148,6 +148,38 @@ script ServerAuthTest extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method table FindNPairRects(integer seed, integer n)
+        -- Test helper: returns up to n NON-interfering valid pairs (at most one per row) as rect tables,
+        -- with no timestamps. One pair per distinct row means they never overlap on Replay, so the run's
+        -- replay score is exactly 2*#rects. Used to craft multi-move runs for the S3 rate-gate tests.
+        local g = _PuzzleCore:GenerateBoard(seed)
+        local rects = {}
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            if #rects >= n then break end
+            for c = 0, _PuzzleCore.COLS - 2 do
+                if g[r][c] + g[r][c + 1] == 10 then
+                    table.insert(rects, { c1 = c, r1 = r, c2 = c + 1, r2 = r })
+                    break
+                end
+            end
+        end
+        return rects
+    end
+
+    @ExecSpace("ServerOnly")
+    method table BuildMoves(table rects, number step)
+        -- Test helper: wraps rects into ValidateRun moves with evenly-spaced timestamps (gap = step
+        -- seconds, first at t=step). step >= MIN_MOVE_INTERVAL avoids the burst guard; step below it trips it.
+        local moves = {}
+        local t = step
+        for i = 1, #rects do
+            moves[i] = { rect = rects[i], t = t }
+            t = t + step
+        end
+        return moves
+    end
+
+    @ExecSpace("ServerOnly")
     method void TestSubmitValidation()
         -- Validates accept path + every rejection path (bad token, wrong owner, reuse, timing, payload, replay mismatch).
         local uid = self:LocalUserId()
@@ -254,6 +286,54 @@ script ServerAuthTest extends Logic
     end
 
     @ExecSpace("ServerOnly")
+    method void TestRateHeuristics()
+        -- [SA-2 Phase S3] anti-bot rate gates. (a) live positive control + (c) live burst guard exercise
+        -- the full submit path; the board-dependent ones self-skip (logs) on the astronomically rare seed
+        -- lacking enough row pairs. (b) is a deterministic unit test of the serverElapsed-floor predicate
+        -- (it can't be forced through a live submit — see its comment), so it never goes flaky.
+        local uid = self:LocalUserId()
+
+        -- (a) Positive control: 4 valid SPARSE moves submitted instantly. moveCount <
+        -- MIN_MOVES_FOR_RATE_CHECK(5), so the serverElapsed floor is skipped and the run is ACCEPTED.
+        -- Proves short fast runs are never auto-rejected (no false positive on the floor's gate).
+        local sA = _SeedService:IssueFor(uid, "single")
+        local rectsA = self:FindNPairRects(sA.seed, 4)
+        if #rectsA >= 4 then
+            local movesA = self:BuildMoves(rectsA, 1.0)
+            local rA = _ScoreService:SubmitFor(uid, sA.token, movesA, #rectsA * 2, 5.0)
+            self:Expect("rate_short_fast_accepted", rA.accepted == true and rA.finalScore == #rectsA * 2)
+        else
+            log("[INFO] rate(a) skipped: only " .. tostring(#rectsA) .. " pairs on board")
+        end
+
+        -- (b) serverElapsed floor predicate (deterministic unit test of the EXACT function ValidateRun
+        -- step (6) calls). A live submit cannot reliably manufacture a serverElapsed below the small
+        -- floor: DataStorage round-trips between token issuance and validation add ~1s of unavoidable
+        -- wall-clock, so an "instant" 6-move submit lands above 6*0.12=0.72s and is (correctly) accepted
+        -- in-suite. The floor's arithmetic is therefore asserted directly with synthetic serverElapsed
+        -- values; its wiring into ValidateRun is correct by inspection (one call site).
+        local floor6 = 6 * _ScoreService.MIN_SECONDS_PER_MOVE   -- 0.72s, computed identically to the internal floor
+        self:Expect("rate_floor_instant_6moves_rejected", _ScoreService:IsRunTooFast(0.05, 6) == true)
+        self:Expect("rate_floor_human_6moves_accepted", _ScoreService:IsRunTooFast(5.0, 6) == false)
+        self:Expect("rate_floor_boundary_below", _ScoreService:IsRunTooFast(floor6 - 0.01, 6) == true)
+        self:Expect("rate_floor_boundary_at", _ScoreService:IsRunTooFast(floor6, 6) == false)
+        self:Expect("rate_floor_threshold_count_instant", _ScoreService:IsRunTooFast(0.0, _ScoreService.MIN_MOVES_FOR_RATE_CHECK) == true)
+        self:Expect("rate_floor_short_run_never_fast", _ScoreService:IsRunTooFast(0.0, _ScoreService.MIN_MOVES_FOR_RATE_CHECK - 1) == false)
+
+        -- (c) burst guard: 6 valid moves with sub-MIN_MOVE_INTERVAL(0.05) gaps -> rejected too_fast
+        -- inside ValidatePayload (before replay). Distinct construction from (b); same reason string.
+        local sC = _SeedService:IssueFor(uid, "single")
+        local rectsC = self:FindNPairRects(sC.seed, 6)
+        if #rectsC >= 6 then
+            local movesC = self:BuildMoves(rectsC, 0.01)
+            local rC = _ScoreService:SubmitFor(uid, sC.token, movesC, #rectsC * 2, 5.0)
+            self:Expect("rate_burst_rejected", rC.accepted == false and rC.reason == "too_fast")
+        else
+            log("[INFO] rate(c) skipped: only " .. tostring(#rectsC) .. " pairs on board")
+        end
+    end
+
+    @ExecSpace("ServerOnly")
     method void RunAll()
         -- One-call full suite for the MSW test loop (server context).
         self:Reset()
@@ -264,6 +344,7 @@ script ServerAuthTest extends Logic
         self:TestSeedIssuance()
         self:TestSubmitValidation()
         self:TestRankedSeam()
+        self:TestRateHeuristics()
         self:Summary()
     end
 end
