@@ -163,6 +163,31 @@ script GameSession extends Component
         end
     end
 
+    method void AbortSession()
+        -- User-initiated mid-run exit via the in-game Home button. Unlike EndSession (timer-expiry
+        -- finish), this is a manual bail-out handled per mode:
+        --   multi  -> ReportFinished with the CURRENT score. A soft in-game button does NOT fire
+        --             UserLeaveEvent, so without this the server match would hang until its deadline;
+        --             a voluntary finish lets settlement proceed with the partial score.
+        --   ranked -> the daily attempt was already consumed at seed issuance and cannot be un-burned,
+        --             so submit the current score (forfeit) -> the result popup shows it and offers the
+        --             title button; quitting silently would waste today's attempt with no record.
+        --   single -> unlimited practice; just tear down, no submit.
+        if not self.active then return end
+        self.active = false
+        _BoardController:UnbindInput()
+        local clientElapsed = _UtilLogic.ElapsedSeconds - self.startElapsed
+        if self.mode == "multi" then
+            _MatchService:ReportFinished(self.matchId, self.token, self.moves, self.score, clientElapsed)
+            log("[GameSession] multi aborted->finished matchId=" .. self.matchId .. " score=" .. tostring(self.score))
+        elseif self.mode == "ranked" then
+            _ScoreService:SubmitRun(self.token, self.moves, self.score, clientElapsed)
+            log("[GameSession] ranked aborted->submitted score=" .. tostring(self.score))
+        else
+            log("[GameSession] single aborted (no submit)")
+        end
+    end
+
     method void OnEndPlay()
         -- Cleanup: unbind input handlers if the map unloads mid-session.
         if self.active then _BoardController:UnbindInput() end

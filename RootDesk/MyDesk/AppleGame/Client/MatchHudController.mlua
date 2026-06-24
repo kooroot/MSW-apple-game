@@ -4,6 +4,9 @@ script MatchHudController extends Logic
 
     -- UI refs injected by UIBuilder bind step (placeholder UUIDs until then).
     property Entity panel = "0adeef25-95fd-4644-ad17-a0b7482bee87"
+    -- The dark background frame is a SEPARATE sibling sprite, not a child of `panel`. The old code
+    -- toggled only `panel`, so this frame stayed on screen forever (the "box always visible" bug).
+    property Entity panelBg = "a2b78cfc-b768-4980-8972-e74be2264ad2"
     property Entity rowTemplate = "9893c7ea-a983-4a24-aecd-16a73b25ee2e"
 
     -- Cloned row entities; `any` is required (mlua has no untyped instance field list).
@@ -20,13 +23,32 @@ script MatchHudController extends Logic
     end
 
     method void Show()
-        -- Makes the HUD panel visible. Guarded so server-side calls are safe no-ops.
+        -- Makes the HUD visible. Toggles BOTH the inner Panel (title + scoreboard list) AND the
+        -- sibling PanelBg frame -- toggling only `panel` left the dark background on screen forever.
+        -- Guarded so a server-side call is a safe no-op.
         if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.panelBg) then self.panelBg.Enable = true end
     end
 
     method void Hide()
-        -- Hides the HUD panel. Guarded so server-side OnBeginPlay call is a safe no-op.
+        -- Hides the whole HUD (inner Panel AND the PanelBg frame). OnBeginPlay calls this, so the HUD
+        -- starts fully hidden everywhere and only appears during an active multiplayer race (Show()).
         if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.panelBg) then self.panelBg.Enable = false end
+    end
+
+    method boolean InActiveMultiMatch()
+        -- True only when THIS client is in a live multiplayer match. The live-score RPC is already
+        -- RACING-gated server-side; this is the client-side guard so a stray/late dispatch can never
+        -- reveal the panel outside multiplayer (requirement: show ONLY during multiplayer). GameSession
+        -- is a map @Component resolved by type string (same pattern as TitleController/ResultController).
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return false end
+        local mapEnt = player.CurrentMap
+        if not isvalid(mapEnt) then return false end
+        local session = mapEnt:GetComponent("script.GameSession")
+        if not isvalid(session) then return false end
+        return session.mode == "multi" and session.active
     end
 
     method void ClearRows()
@@ -104,8 +126,12 @@ script MatchHudController extends Logic
 
     method void OnLiveScoreboard(string matchId, table names, table scores, table userIds)
         -- Bridge called by MatchService on the server: _MatchHudController:OnLiveScoreboard(...)
-        -- Makes the panel visible, then re-renders the scoreboard from the latest snapshot.
-        -- matchId is accepted to match the caller signature; used only for logging.
+        -- Reveal + re-render ONLY during an active multiplayer match on this client; ignore otherwise
+        -- so the panel never leaks into single/ranked/title. matchId is used only for logging.
+        if not self:InActiveMultiMatch() then
+            log("[MatchHudController] OnLiveScoreboard ignored (not in active multi match)")
+            return
+        end
         log("[MatchHudController] OnLiveScoreboard matchId=" .. tostring(matchId) .. " entries=" .. tostring(#scores))
         self:Show()
         self:RenderScoreboard(names, scores, userIds)

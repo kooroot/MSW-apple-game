@@ -2,56 +2,45 @@
 @ExecSpace("ClientOnly")
 script SkinSelectController extends Logic
 
-    -- [Tile-skin K3] Drives the skin-select UI in AppleTitle.ui: a quick-select strip on the title
-    -- (SkinBtn_1..N, tap = apply instantly) and a modal "전체보기" popup grid (Card_1..N). Both lists
-    -- are populated from AssetCatalog (the single skin registry) at begin -- each item shows that skin's
-    -- tile sprite with a recolored sample digit, so the player previews readability before picking.
+    -- [Tile-skin K3] Drives the skin-select strip on the title (SkinBtn_1..N, tap = apply instantly).
+    -- The list is populated from AssetCatalog (the single skin registry) at begin -- each item shows that
+    -- skin's tile sprite with a recolored sample digit, so the player previews readability before picking.
     -- A pick routes to _SkinService:SetSkin (which repaints the board + persists). This controller owns
     -- only presentation + input; it holds no skin state of its own.
 
     -- UI refs injected by the UIBuilder bind step (placeholder UUIDs until then).
     property Entity skinBar = "0c80c7e6-a903-4f9a-8d2e-f07d944a7f62"        -- strip container (parent of SkinBtn_i / SkinSelRing_i)
-    property ButtonComponent moreBtn = "912af8c5-b027-45e2-92e5-405fbad402ea" -- opens the popup
-    property Entity popupGroup = "a86354a4-ec8e-40b8-a7cf-2f077953e3a7"      -- modal popup group (toggled Enable)
-    property Entity popupWindow = "0912cfd7-5ef3-40ef-9a00-03859b795dee"     -- parent of Card_i / SelRing_i / CardName_i
-    property ButtonComponent closeBtn = "edfae9d3-2dc0-404f-9cec-1f4b5b5edc02" -- closes the popup
 
     -- Number of skins (mirrors AssetCatalog; re-read at begin so it never drifts from the registry).
     property integer SkinN = 12
     -- Sample digit shown on every preview tile (representative of board digits 1..9 for readability).
     property string SampleDigit = "5"
 
-    -- EventHandlerBase tokens must be `any` (msw-scripting §5). Click handlers for the 2*N item buttons
-    -- are stored in a flat list so OnEndPlay can release them; the two chrome buttons get their own.
+    -- EventHandlerBase tokens must be `any` (msw-scripting §5). Click handlers for the N strip buttons
+    -- are stored in a flat list so OnEndPlay can release them.
     property any itemHandlers = nil
-    property any openHandler = nil
-    property any closeHandler = nil
 
     method void OnBeginPlay()
-        -- Client: populate both lists from AssetCatalog, wire clicks, start with the popup closed, and
-        -- highlight the active skin. A @Logic OnBeginPlay runs on BOTH sides; on the server every UI ref
-        -- is nil and _AssetCatalog (ClientOnly) is nil, so all work is client-gated + isvalid-guarded.
+        -- Client: populate the strip from AssetCatalog, wire clicks, and highlight the active skin. A
+        -- @Logic OnBeginPlay runs on BOTH sides; on the server every UI ref is nil and _AssetCatalog
+        -- (ClientOnly) is nil, so all work is client-gated + isvalid-guarded.
         if not self:IsClient() then return end
         self.itemHandlers = {}
         self:PopulateItems()
         self:WireClicks()
-        if isvalid(self.popupGroup) then self.popupGroup.Enable = false end
         self:UpdateHighlight()
         log("[SkinSelectController] ready")
     end
 
     method void PopulateItems()
-        -- Paints every strip thumbnail + popup card from the skin registry: tile sprite as the button
-        -- background, the sample digit recolored per skin (fill + outline) so the preview matches how the
-        -- board renders that skin. Card names come from the registry too (single source of truth).
+        -- Paints every strip thumbnail from the skin registry: tile sprite as the button background, the
+        -- sample digit recolored per skin (fill + outline) so the preview matches how the board renders
+        -- that skin.
         if _AssetCatalog == nil then return end
         for i = 1, self.SkinN do
             local style = _AssetCatalog:SkinStyle(i)
             if style ~= nil then
                 self:PaintTile(self:Item(self.skinBar, "SkinBtn_" .. i), style)
-                self:PaintTile(self:Item(self.popupWindow, "Card_" .. i), style)
-                local nameEnt = self:Item(self.popupWindow, "CardName_" .. i)
-                if isvalid(nameEnt) then nameEnt.TextComponent.Text = style.name end
             end
         end
     end
@@ -63,7 +52,7 @@ script SkinSelectController extends Logic
     end
 
     method void PaintTile(Entity btn, table style)
-        -- Applies one skin's tile sprite + recolored sample digit to a preview button (strip or card).
+        -- Applies one skin's tile sprite + recolored sample digit to a preview button.
         -- ImageRUID needs a runtime DataRef(ruid) (a plain { DataId } table is silently rejected, same as
         -- BoardController). All skin tileRUIDs are `sprite` type, so no thumbnail:// prefix is needed.
         if not isvalid(btn) then return end
@@ -79,17 +68,10 @@ script SkinSelectController extends Logic
     end
 
     method void WireClicks()
-        -- Connects every strip thumbnail and popup card to the shared OnPickSkin handler (which reads the
-        -- skin id off the clicked entity's name), plus the open/close chrome buttons.
+        -- Connects every strip thumbnail to the shared OnPickSkin handler (which reads the skin id off the
+        -- clicked entity's name).
         for i = 1, self.SkinN do
             self:ConnectItem(self:Item(self.skinBar, "SkinBtn_" .. i))
-            self:ConnectItem(self:Item(self.popupWindow, "Card_" .. i))
-        end
-        if isvalid(self.moreBtn) then
-            self.openHandler = self.moreBtn.Entity:ConnectEvent(ButtonClickEvent, self.OnOpen)
-        end
-        if isvalid(self.closeBtn) then
-            self.closeHandler = self.closeBtn.Entity:ConnectEvent(ButtonClickEvent, self.OnClose)
         end
     end
 
@@ -101,8 +83,8 @@ script SkinSelectController extends Logic
     end
 
     method void OnPickSkin(ButtonClickEvent ev)
-        -- Shared click handler: the clicked entity is named "SkinBtn_<id>" or "Card_<id>"; the trailing
-        -- number is the skin id. SetSkin repaints the live board + persists; we just refresh the rings.
+        -- Shared click handler: the clicked entity is named "SkinBtn_<id>"; the trailing number is the
+        -- skin id. SetSkin repaints the live board + persists; we just refresh the rings.
         if ev == nil or not isvalid(ev.Entity) then return end
         local id = tonumber(string.match(ev.Entity.Name, "_(%d+)$"))
         if id == nil then return end
@@ -111,29 +93,14 @@ script SkinSelectController extends Logic
         if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
     end
 
-    method void OnOpen()
-        -- "전체보기" button: open the modal popup and sync the selection ring.
-        if isvalid(self.popupGroup) then self.popupGroup.Enable = true end
-        self:UpdateHighlight()
-        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
-    end
-
-    method void OnClose()
-        -- Close button: dismiss the modal popup.
-        if isvalid(self.popupGroup) then self.popupGroup.Enable = false end
-        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
-    end
-
     method void UpdateHighlight()
-        -- Shows the gold selection ring behind the active skin in both the strip and the popup grid,
-        -- hides it on every other item. Reads the active id from SkinService each call (no local copy).
+        -- Shows the gold selection ring behind the active skin in the strip, hides it on every other item.
+        -- Reads the active id from SkinService each call (no local copy).
         local cur = 1
         if _SkinService ~= nil then cur = _SkinService:CurrentSkin() end
         for i = 1, self.SkinN do
             local sr = self:Item(self.skinBar, "SkinSelRing_" .. i)
             if isvalid(sr) then sr.Enable = (i == cur) end
-            local cr = self:Item(self.popupWindow, "SelRing_" .. i)
-            if isvalid(cr) then cr.Enable = (i == cur) end
         end
     end
 
@@ -147,15 +114,7 @@ script SkinSelectController extends Logic
                 end
             end
         end
-        if self.openHandler ~= nil and isvalid(self.moreBtn) then
-            self.moreBtn.Entity:DisconnectEvent(ButtonClickEvent, self.openHandler)
-        end
-        if self.closeHandler ~= nil and isvalid(self.closeBtn) then
-            self.closeBtn.Entity:DisconnectEvent(ButtonClickEvent, self.closeHandler)
-        end
         self.itemHandlers = nil
-        self.openHandler = nil
-        self.closeHandler = nil
     end
 
 end

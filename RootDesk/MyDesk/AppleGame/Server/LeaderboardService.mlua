@@ -97,6 +97,17 @@ script LeaderboardService extends Logic
 				log_warning("[LeaderboardService] SubmitScore: no config for boardId=" .. boardId)
 			end
 		end
+
+		-- Make the just-written scores VISIBLE immediately. RequestLeaderboard reads an in-memory
+		-- snapshot (GetRankingSnapshot) that UpdateSnapshots only refreshes on a RefreshIntervalMinutes
+		-- (=30m) cycle, so without this a finished ranked run "doesn't register" in the leaderboard the
+		-- player opens right after the run. Force-rebuild the snapshot from the live SortableDataStorage
+		-- now (same pattern the board-4 rating write uses in MatchTest.TestBoardWrite).
+		if _RankingDataStorageLogic ~= nil then
+			for _, boardId in ipairs(boards) do
+				_RankingDataStorageLogic:TryForceUpdateSharedMemory(boardId)
+			end
+		end
 	end
 
 	@ExecSpace("ServerOnly")
@@ -139,6 +150,12 @@ script LeaderboardService extends Logic
 			log("[LeaderboardService] SubmitRating board=4 cycleIndex=" .. cycleIndex .. " rating=" .. rating)
 		else
 			log_warning("[LeaderboardService] SubmitRating board=4 WRITE FAILED rating=" .. rating .. " (cycleIndex=" .. cycleIndex .. ")")
+		end
+
+		-- Same freshness fix as SubmitScore: rebuild the board-4 snapshot from the SortableDataStorage
+		-- now so the rating shows in the leaderboard without waiting for the 30-minute refresh cycle.
+		if _RankingDataStorageLogic ~= nil then
+			_RankingDataStorageLogic:TryForceUpdateSharedMemory(self.BOARD_MULTI_RATING)
 		end
 	end
 

@@ -6,6 +6,10 @@ script HudController extends Logic
     property TextComponent scoreValue = "e427a0f5-2516-4f2b-8ebd-0f21de0174c4"
     property TextComponent timeText = "e84fe07e-a0c8-4cd7-aa0c-978117103c33"
     property SpriteGUIRendererComponent timerFill = "2b1bbb55-41a4-4f9b-b0cf-dd158c93c0c1"
+    -- In-game exit/home button on the HUD bar (top-right). Lets the player leave a run mid-game.
+    property ButtonComponent btnHome = "d673e614-6deb-4746-baa6-59b781494df9"
+    -- EventHandlerBase token must be `any` (msw-scripting §5); nil until OnBeginPlay wires it.
+    property any homeHandler = nil
 
     method void OnBeginPlay()
         -- Initializes the HUD to a clean zero/full state at world start. Runs on BOTH server and
@@ -15,6 +19,11 @@ script HudController extends Logic
         self:SetScore(0)
         self:SetTimeRatio(1.0)
         self:SetTimeText(120)
+        -- Wire the in-game home button. A @Logic OnBeginPlay runs on BOTH server and client; on the
+        -- server the UI ref is nil, so the connect is isvalid-guarded (same hazard as the setters above).
+        if isvalid(self.btnHome) then
+            self.homeHandler = self.btnHome.Entity:ConnectEvent(ButtonClickEvent, self.OnHome)
+        end
         log("[HudController] ready")
     end
 
@@ -58,6 +67,39 @@ script HudController extends Logic
         -- Sets the seconds-remaining text.
         if not isvalid(self.timeText) then return end
         self.timeText.Text = tostring(secondsLeft)
+    end
+
+    method void OnHome()
+        -- In-game exit/home button. Plays the click SFX, aborts the running session (per-mode submit is
+        -- handled by GameSession:AbortSession), and returns the player to the mode-select title. GameSession
+        -- is a map @Component -> resolve it off the local player's current map (map-name independent) so an
+        -- early/off-map click is a safe no-op. _AssetCatalog/_TitleController/_MatchHudController are @Logic
+        -- globals -> guard with ~= nil. mode/active read off the live instance are LSP INFO-only (the
+        -- forward GameSession type isn't visible to the LSP yet), same as ResultController:OnRetry.
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local mapEnt = player.CurrentMap
+        if not isvalid(mapEnt) then return end
+        local session = mapEnt:GetComponent("script.GameSession")
+        if not isvalid(session) then return end
+        local mode = session.mode
+        local wasActive = session.active
+        session:AbortSession()
+        -- The live multi scoreboard HUD must not linger over the title.
+        if _MatchHudController ~= nil then _MatchHudController:Hide() end
+        -- Ranked forfeit submit triggers the result popup, which owns its own title nav, so don't
+        -- double-open the title there. Single / multi (and any inactive click) reopen the title directly.
+        if mode == "ranked" and wasActive then return end
+        if _TitleController ~= nil then _TitleController:Show() end
+    end
+
+    method void OnEndPlay()
+        -- Disconnects the home button handler (mirror of OnBeginPlay).
+        if self.homeHandler ~= nil and isvalid(self.btnHome) then
+            self.btnHome.Entity:DisconnectEvent(ButtonClickEvent, self.homeHandler)
+        end
+        self.homeHandler = nil
     end
 
 end

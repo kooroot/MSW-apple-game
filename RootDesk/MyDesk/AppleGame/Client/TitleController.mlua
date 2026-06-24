@@ -8,11 +8,14 @@ script TitleController extends Logic
     property ButtonComponent btnSingle = "bac777d1-8c5c-46a2-a230-3b858c93ae72"
     property ButtonComponent btnRanked = "162d8a5a-68a3-43d3-8b12-3a9cf378a991"
     property ButtonComponent btnMulti = "d56bb108-87e6-4ab9-a89d-d01c09521758"
+    -- "랭킹 보기" button: opens the leaderboard popup from the title without starting a game.
+    property ButtonComponent btnRank = "c3246513-9996-4e1b-ab83-7a75045e30a5"
 
     -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
     property any singleHandler = nil
     property any rankedHandler = nil
     property any multiHandler = nil
+    property any rankHandler = nil
 
     method void OnBeginPlay()
         -- Shows the title at start (it is the entry screen) and wires the two mode buttons. A @Logic
@@ -30,6 +33,9 @@ script TitleController extends Logic
         end
         if isvalid(self.btnMulti) then
             self.multiHandler = self.btnMulti.Entity:ConnectEvent(ButtonClickEvent, self.OnMulti)
+        end
+        if isvalid(self.btnRank) then
+            self.rankHandler = self.btnRank.Entity:ConnectEvent(ButtonClickEvent, self.OnRank)
         end
         log("[TitleController] ready")
     end
@@ -55,6 +61,9 @@ script TitleController extends Logic
         -- an early/off-map click is a safe no-op. _AssetCatalog is a @Logic global -> guard with ~= nil.
         if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
         self:Hide()
+        -- Defense-in-depth: single/ranked are never multiplayer, so make sure the live-score HUD is not
+        -- showing when entering them (the panel is multiplayer-only). Safe no-op if already hidden.
+        if _MatchHudController ~= nil then _MatchHudController:Hide() end
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
         local mapEnt = player.CurrentMap
@@ -88,6 +97,18 @@ script TitleController extends Logic
         if _MatchmakingController ~= nil then _MatchmakingController:Show() end
     end
 
+    method void OnRank()
+        -- "랭킹 보기" button: opens the leaderboard popup straight from the title (no game involved).
+        -- _LeaderboardController:Open(1) shows the popup on the Day board; it is fully self-contained
+        -- (own panel + dimmer + tab fetch) and makes no game-end assumption, so a cold open is safe.
+        -- Deliberately does NOT call self:Hide(): the leaderboard has its own dimmer and renders above
+        -- the title (GroupOrder), so the title stays put and is revealed again when the player closes it.
+        -- _AssetCatalog / _LeaderboardController are @Logic globals -> guard with ~= nil (an off-client /
+        -- pre-init call is then a safe no-op, matching StartMode/OnMulti's guarding style).
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
+        if _LeaderboardController ~= nil then _LeaderboardController:Open(1) end
+    end
+
     method void OnEndPlay()
         -- Disconnects button handlers (mirror of OnBeginPlay).
         if self.singleHandler ~= nil and isvalid(self.btnSingle) then
@@ -99,9 +120,13 @@ script TitleController extends Logic
         if self.multiHandler ~= nil and isvalid(self.btnMulti) then
             self.btnMulti.Entity:DisconnectEvent(ButtonClickEvent, self.multiHandler)
         end
+        if self.rankHandler ~= nil and isvalid(self.btnRank) then
+            self.btnRank.Entity:DisconnectEvent(ButtonClickEvent, self.rankHandler)
+        end
         self.singleHandler = nil
         self.rankedHandler = nil
         self.multiHandler = nil
+        self.rankHandler = nil
     end
 
 end
