@@ -1,0 +1,122 @@
+@Logic
+@ExecSpace("ClientOnly")
+script MatchHudController extends Logic
+
+    -- UI refs injected by UIBuilder bind step (placeholder UUIDs until then).
+    property Entity panel = "0adeef25-95fd-4644-ad17-a0b7482bee87"
+    property Entity rowTemplate = "02a63e9e-513d-4822-aba3-f00865cd4449"
+    property Entity listRoot = "0d8ea5f9-c7b6-4ed2-969d-92e3912e8f6d"
+
+    -- Cloned row entities; `any` is required (mlua has no untyped instance field list).
+    property any rows = nil
+
+    method void OnBeginPlay()
+        -- Initialises the row cache, hides the row prefab, and hides the HUD panel.
+        -- OnBeginPlay runs on BOTH server and client; on the server every UI ref is nil so
+        -- every deref is isvalid-guarded (matching LeaderboardController pattern).
+        self.rows = {}
+        if isvalid(self.rowTemplate) then self.rowTemplate:SetEnable(false) end
+        self:Hide()
+        log("[MatchHudController] ready")
+    end
+
+    method void Show()
+        -- Makes the HUD panel visible. Guarded so server-side calls are safe no-ops.
+        if isvalid(self.panel) then self.panel.Enable = true end
+    end
+
+    method void Hide()
+        -- Hides the HUD panel. Guarded so server-side OnBeginPlay call is a safe no-op.
+        if isvalid(self.panel) then self.panel.Enable = false end
+    end
+
+    method void ClearRows()
+        -- Destroys all previously cloned row entities and resets the cache.
+        if self.rows == nil then self.rows = {} return end
+        for i, row in ipairs(self.rows) do
+            if isvalid(row) then row:Destroy() end
+        end
+        self.rows = {}
+    end
+
+    method void RenderScoreboard(table names, table scores, table userIds)
+        -- Rebuilds the scoreboard rows from parallel arrays sorted by score descending.
+        -- Guards every UI access; on the server all refs are nil so this is a safe no-op.
+        self:ClearRows()
+        if not isvalid(self.rowTemplate) then return end
+
+        -- Determine the local player's UserId for highlight (client-only; nil on server).
+        local localUserId = ""
+        if isvalid(_UserService.LocalPlayer) then
+            local pc = _UserService.LocalPlayer.PlayerComponent
+            if isvalid(pc) then
+                localUserId = pc.UserId
+            end
+        end
+
+        -- Build a sorted index permutation (descending score) without mutating the source arrays.
+        local n = #scores
+        local idx = {}
+        for i = 1, n do
+            idx[i] = i
+        end
+        table.sort(idx, function(a, b) return scores[a] > scores[b] end)
+
+        -- Clone RowTemplate for each entry in sorted order.
+        local cloneParent = self.listRoot
+        if not isvalid(cloneParent) then
+            cloneParent = self.rowTemplate
+        end
+        for rank, srcIdx in ipairs(idx) do
+            local row = self.rowTemplate:Clone("HudRow_" .. tostring(rank))
+            if isvalid(row) then
+                row:SetEnable(true)
+
+                local nameNode = row:GetChildByName("Name", false)
+                if isvalid(nameNode) then
+                    nameNode.TextComponent.Text = tostring(names[srcIdx])
+                end
+
+                local scoreNode = row:GetChildByName("Score", false)
+                if isvalid(scoreNode) then
+                    scoreNode.TextComponent.Text = tostring(scores[srcIdx])
+                end
+
+                -- Highlight the local player's row with an accent colour on the name text.
+                if userIds[srcIdx] == localUserId and localUserId ~= "" then
+                    if isvalid(nameNode) then
+                        local tc = nameNode.TextComponent
+                        if isvalid(tc) then
+                            tc.FontColor = Color(0.98, 0.82, 0.10, 1.0)
+                        end
+                    end
+                    if isvalid(scoreNode) then
+                        local tc = scoreNode.TextComponent
+                        if isvalid(tc) then
+                            tc.FontColor = Color(0.98, 0.82, 0.10, 1.0)
+                        end
+                    end
+                end
+
+                table.insert(self.rows, row)
+            end
+        end
+
+        log("[MatchHudController] scoreboard rows=" .. tostring(#self.rows))
+    end
+
+    method void OnLiveScoreboard(string matchId, table names, table scores, table userIds)
+        -- Bridge called by MatchService on the server: _MatchHudController:OnLiveScoreboard(...)
+        -- Makes the panel visible, then re-renders the scoreboard from the latest snapshot.
+        -- matchId is accepted to match the caller signature; used only for logging.
+        log("[MatchHudController] OnLiveScoreboard matchId=" .. tostring(matchId) .. " entries=" .. tostring(#scores))
+        self:Show()
+        self:RenderScoreboard(names, scores, userIds)
+    end
+
+    method void OnEndPlay()
+        -- Destroys any cloned rows. No button handlers to disconnect (read-only HUD).
+        self:ClearRows()
+    end
+
+end
