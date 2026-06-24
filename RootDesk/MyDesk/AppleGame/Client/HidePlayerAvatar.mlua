@@ -3,22 +3,27 @@
 script HidePlayerAvatar extends Component
 
     method void OnBeginPlay()
-        -- Hides the local player's avatar renderer so the UI puzzle has no visible character; the entity
-        -- stays alive so ranking/identity components still work. @ExecSpace("ClientOnly") does NOT stop a
-        -- map @Component's OnBeginPlay from also firing on the server (where LocalPlayer is nil), so guard
-        -- on IsClient() first -- avatar hiding is purely client-visual. The isvalid guard below still
-        -- covers the brief client-side pre-spawn window.
+        -- Hide the local player's avatar so the UI puzzle shows no character; the entity stays alive so
+        -- ranking/identity still work. This map @Component's OnBeginPlay also fires on the server (LocalPlayer
+        -- nil there), so client-gate first. NOTE: the player renders through CostumeManager/skeleton, NOT
+        -- AvatarRendererComponent/SpriteRendererComponent -- disabling those silently no-ops (the old bug that
+        -- left the character visible). Entity.Visible=false is the reliable lever (verified at runtime).
         if not self:IsClient() then return end
         local player = _UserService.LocalPlayer
-        if not isvalid(player) then
-            log_warning("[HidePlayerAvatar] no LocalPlayer at BeginPlay")
-            return
+        if isvalid(player) then
+            player.Visible = false
+            log("[HidePlayerAvatar] hid " .. tostring(player.Name))
         end
-        local avatar = player.AvatarRendererComponent
-        if isvalid(avatar) then avatar.Enable = false end
-        local sprite = player.SpriteRendererComponent
-        if isvalid(sprite) then sprite.Enable = false end
-        log("[HidePlayerAvatar] avatar hidden for " .. tostring(player.Name))
+    end
+
+    method void OnUpdate(number delta)
+        -- The engine re-shows the avatar a frame or two after spawn/respawn (verified: Visible flips back to
+        -- true after OnBeginPlay), so re-assert every frame. Idempotent and cheap -- it only writes when
+        -- Visible has flipped back on, not every frame. (OnMapEnter is NOT used: its Entity arg is the map
+        -- being entered, not the player, so it would hide the map itself.)
+        if not self:IsClient() then return end
+        local player = _UserService.LocalPlayer
+        if isvalid(player) and player.Visible then player.Visible = false end
     end
 
 end
