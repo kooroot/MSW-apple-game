@@ -1,9 +1,10 @@
 @Logic
 script LeaderboardService extends Logic
-	property integer BOARD_DAY     = 1
-	property integer BOARD_WEEK    = 2
-	property integer BOARD_ALLTIME = 3
-	property integer PAGE_SIZE     = 20
+	property integer BOARD_DAY          = 1
+	property integer BOARD_WEEK         = 2
+	property integer BOARD_ALLTIME      = 3
+	property integer BOARD_MULTI_RATING = 4
+	property integer PAGE_SIZE          = 20
 
 	method string SanitizeTag(string name)
 		-- Returns a safe ranking tag: pipe-free (the engine's delimiter) and UTF-8 byte length <= 55,
@@ -98,12 +99,55 @@ script LeaderboardService extends Logic
 		end
 	end
 
+	@ExecSpace("ServerOnly")
+	method void SubmitRating(string userId, integer rating)
+		-- Write a player's ELO rating to board 4 (force=true: ratings can rise OR fall, no keep-max).
+		if rating < 1 then
+			log_warning("[LeaderboardService] SubmitRating rejected: rating < 1 for userId=" .. userId)
+			return
+		end
+
+		local playerEntity = self:FindPlayerEntity(userId)
+		if not isvalid(playerEntity) then
+			log_warning("[LeaderboardService] SubmitRating: player not ready (absent or DB unloaded) for userId=" .. userId)
+			return
+		end
+
+		local playerRanking = playerEntity.PlayerRanking
+		if playerRanking == nil then
+			log_warning("[LeaderboardService] SubmitRating: PlayerRanking component missing for userId=" .. userId)
+			return
+		end
+
+		local elapsed = _DateTimeLogic:GetTimeElapsed()
+		local displayName = playerEntity.PlayerComponent.Nickname
+		if displayName == nil or displayName == "" then
+			displayName = userId
+		end
+		local tag = self:SanitizeTag(displayName)
+		local extra = ""
+
+		local configData = _RankingConfigDataSetLogic:GetData(self.BOARD_MULTI_RATING)
+		if configData == nil then
+			log_warning("[LeaderboardService] SubmitRating: no config for boardId=4")
+			return
+		end
+
+		local cycleIndex = configData:GetCycleIndex(elapsed)
+		local ok = playerRanking:SetScoreAndWait(self.BOARD_MULTI_RATING, cycleIndex, rating, tag, extra, true)
+		if ok then
+			log("[LeaderboardService] SubmitRating board=4 cycleIndex=" .. cycleIndex .. " rating=" .. rating)
+		else
+			log_warning("[LeaderboardService] SubmitRating board=4 WRITE FAILED rating=" .. rating .. " (cycleIndex=" .. cycleIndex .. ")")
+		end
+	end
+
 	@ExecSpace("Server")
 	method void RequestLeaderboard(integer boardId, integer pageNo)
 		-- Fetch the cached snapshot for the board/page and reply via ReceiveLeaderboard (stale=true).
 		-- Reject board ids outside the three known boards rather than relying on the snapshot-nil path
 		-- (defense-in-depth: this is a client-callable @Server RPC, so boardId is client-supplied).
-		if boardId ~= self.BOARD_DAY and boardId ~= self.BOARD_WEEK and boardId ~= self.BOARD_ALLTIME then
+		if boardId ~= self.BOARD_DAY and boardId ~= self.BOARD_WEEK and boardId ~= self.BOARD_ALLTIME and boardId ~= self.BOARD_MULTI_RATING then
 			log_warning("[LeaderboardService] RequestLeaderboard: invalid boardId=" .. tostring(boardId))
 			self:ReceiveLeaderboard(boardId, {}, 0, 0, true, senderUserId)
 			return
