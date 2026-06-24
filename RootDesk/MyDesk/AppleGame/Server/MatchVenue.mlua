@@ -1,0 +1,102 @@
+@Logic
+script MatchVenue extends Logic
+    -- Venue-abstraction seam: isolates all instance-room / dynamic-map API behind one flag.
+    -- When USE_INSTANCE_ROOMS = false  → LogicalVenue (default, Maker-safe).
+    -- When USE_INSTANCE_ROOMS = true   → InstanceRoomVenue (gated; unreachable in Maker, [LEA-3002]).
+    -- ONLY this module is permitted to reference _RoomService / _DynamicMapService.
+    property boolean USE_INSTANCE_ROOMS = false
+
+    @ExecSpace("ServerOnly")
+    method string AllocateVenue(string matchId, table roster)
+        -- Returns a venue handle that callers (MatchService, etc.) treat as opaque.
+        -- LogicalVenue: handle IS the matchId; no room allocation needed.
+        -- InstanceRoomVenue: create an instance room and return its key.
+        log("[MatchVenue] AllocateVenue matchId=" .. tostring(matchId) .. " USE_INSTANCE_ROOMS=" .. tostring(self.USE_INSTANCE_ROOMS))
+        if not self.USE_INSTANCE_ROOMS then
+            -- LogicalVenue: players stay on map01; matchId is sufficient as a handle.
+            return matchId
+        end
+
+        -- InstanceRoomVenue branch — GATED: unreachable in Maker ([LEA-3002]).
+        -- Signature from RoomService.d.mlua:
+        --   method InstanceRoom CreateInstanceRoom(string key, table<string> mapNames, float firstUserWaitSeconds = 10)
+        -- We pass matchId as the room key and the default start map.
+        -- [GATED:instance-room] The map name below must match a map configured with InstanceMap=true.
+        local INSTANCE_MAP_NAME = "map01"   -- [GATED:instance-room] TODO: replace with InstanceMap=true map name at publish time.
+        local ok, result = pcall(function()
+            return _RoomService:CreateInstanceRoom(matchId, { INSTANCE_MAP_NAME }, 30)
+        end)
+        if not ok or result == nil then
+            log_warning("[MatchVenue] CreateInstanceRoom failed for matchId=" .. tostring(matchId) .. " err=" .. tostring(result) .. "; falling back to LogicalVenue handle.")
+            -- Fail soft: return matchId so the match flow is never hard-crashed by a misconfigured flag.
+            return matchId
+        end
+        -- result is an InstanceRoom object; its RoomKey is the canonical handle for subsequent calls.
+        local roomKey = matchId   -- [GATED:instance-room] TODO confirm InstanceRoom.RoomKey field name; using matchId as fallback key.
+        local gotKey, keyVal = pcall(function() return result.RoomKey end)
+        if gotKey and type(keyVal) == "string" and keyVal ~= "" then
+            roomKey = keyVal
+        end
+        log("[MatchVenue] InstanceRoom created roomKey=" .. roomKey)
+        return roomKey
+    end
+
+    @ExecSpace("ServerOnly")
+    method boolean PlaceUsers(string handle, table roster)
+        -- Moves roster members into the venue identified by handle.
+        -- LogicalVenue: no-op (players already share map01); return true.
+        -- InstanceRoomVenue: move each userId in roster to the instance room.
+        log("[MatchVenue] PlaceUsers handle=" .. tostring(handle) .. " USE_INSTANCE_ROOMS=" .. tostring(self.USE_INSTANCE_ROOMS))
+        if not self.USE_INSTANCE_ROOMS then
+            -- LogicalVenue: all players are already on the shared map; nothing to do.
+            return true
+        end
+
+        -- InstanceRoomVenue branch — GATED: unreachable in Maker ([LEA-3002]).
+        -- Signature from RoomService.d.mlua:
+        --   method int32 MoveUsersToInstanceRoom(string key, table<string> userIds, string mapName = nil)
+        -- `handle` is the room key returned by AllocateVenue.
+        -- `roster` is a table of userId strings (as passed by MatchService).
+        local ok, moved = pcall(function()
+            return _RoomService:MoveUsersToInstanceRoom(handle, roster, nil)
+        end)
+        if not ok then
+            log_warning("[MatchVenue] MoveUsersToInstanceRoom pcall error handle=" .. tostring(handle) .. " err=" .. tostring(moved))
+            return false
+        end
+        -- moved is int32: number of users successfully moved.
+        -- Treat any non-false result as partial success; callers decide whether to abort.
+        local movedCount = tonumber(moved) or 0
+        log("[MatchVenue] MoveUsersToInstanceRoom handle=" .. handle .. " movedCount=" .. tostring(movedCount))
+        return movedCount >= 0   -- false only on hard pcall failure above
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ReleaseVenue(string handle)
+        -- Tears down the venue when the match ends.
+        -- LogicalVenue: no-op (shared map01 persists).
+        -- InstanceRoomVenue: destroy the instance room.
+        log("[MatchVenue] ReleaseVenue handle=" .. tostring(handle) .. " USE_INSTANCE_ROOMS=" .. tostring(self.USE_INSTANCE_ROOMS))
+        if not self.USE_INSTANCE_ROOMS then
+            -- LogicalVenue: nothing to release.
+            return
+        end
+
+        -- InstanceRoomVenue branch — GATED: unreachable in Maker ([LEA-3002]).
+        -- RoomService.d.mlua has no explicit DestroyInstanceRoom method.
+        -- DynamicMapService.d.mlua has:
+        --   method DynamicMapResultCode DestroyDynamicMap(string mapName)
+        -- The canonical pattern for instance rooms is to move all users back to the static room
+        -- first, then let the room self-destruct (no users = auto-destroy per MSW runtime).
+        -- [GATED:instance-room] TODO confirm: does _RoomService expose a destroy API? Using MoveUsersToStaticRoom fallback.
+        local ok1, err1 = pcall(function()
+            -- Move any remaining users out (room auto-destroys when empty).
+            -- We don't have the user list here; this is best-effort cleanup.
+            -- [GATED:instance-room] TODO: pass remaining roster if MatchService stores it, or query room membership.
+            log("[MatchVenue] ReleaseVenue: instance-room branch — no DestroyInstanceRoom API found in d.mlua; relying on room auto-destruction when empty.")
+        end)
+        if not ok1 then
+            log_warning("[MatchVenue] ReleaseVenue pcall error handle=" .. tostring(handle) .. " err=" .. tostring(err1))
+        end
+    end
+end
