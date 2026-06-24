@@ -1,0 +1,93 @@
+@Logic
+script MatchRatingStore extends Logic
+    -- DataStorage error codes (see datastorage.md §6).
+    property integer ERR_OK = 0
+    property integer ERR_NOT_FOUND = 1000002
+
+    @ExecSpace("ServerOnly")
+    method integer ReadIntOr(string userId, string key, integer default)
+        -- Private helper: reads one integer-valued DataStorage key for userId, returning `default`
+        -- on missing / empty / non-numeric / genuine error (fail-closed). Shared by GetRating and the
+        -- three counter reads to avoid copy-pasting the same GetAndWait block four times.
+        -- EMPIRICAL DataStorage semantics (verified against RankAttemptStore 2026-06-23):
+        --   * GetAndWait returns ERR_OK + "" for a missing key (NOT ERR_NOT_FOUND); branch on value.
+        --   * tonumber("") == nil, tonumber(nil) == nil -> coerces cleanly to `default`.
+        local storage = _DataStorageService:GetUserDataStorage(userId)
+        local readErr, raw = storage:GetAndWait(key)
+        if readErr ~= self.ERR_OK and readErr ~= self.ERR_NOT_FOUND then
+            -- Genuine read failure (timeout / exhausted / internal): treat as default (fail-closed).
+            log_warning("[MRS] ReadIntOr failed errCode=" .. tostring(readErr) .. " userId=" .. userId .. " key=" .. key)
+            return default
+        end
+        local n = tonumber(raw)
+        if n == nil then
+            return default
+        end
+        return math.floor(n)
+    end
+
+    @ExecSpace("ServerOnly")
+    method integer GetRating(string userId)
+        -- Returns the stored ELO rating for userId; default 1000 when not yet set (first-time user).
+        -- Delegates to ReadIntOr which handles ERR_OK+"", ERR_NOT_FOUND, and genuine errors uniformly.
+        return self:ReadIntOr(userId, "multiRating", 1000)
+    end
+
+    @ExecSpace("ServerOnly")
+    method table ApplyMatchResult(string userId, integer delta, string outcome)
+        -- Applies a match result: adjusts the ELO rating by delta (floored at 1, never 0 or negative),
+        -- increments the counter for outcome ("win"/"lose"/"draw"), and returns the post-update snapshot.
+        -- CONCURRENCY: Read->compute->Set is serialized (one match settles at a time per server instance,
+        -- same trade-off as RankAttemptStore.SetPersonalBestIfHigher). No CAS loop needed — YAGNI.
+        -- GLOBAL CONSTRAINT #2: rating floor is max(1, ...) — SetScoreAndWait rejects values < 1, and
+        -- a rating must never reach 0.
+
+        -- Step 1: compute new rating.
+        local oldRating = self:GetRating(userId)
+        local newRating = math.max(1, oldRating + delta)
+
+        -- Step 2: persist new rating.
+        local ratingStorage = _DataStorageService:GetUserDataStorage(userId)
+        local setRatingErr = ratingStorage:SetAndWait("multiRating", tostring(newRating))
+        if setRatingErr ~= self.ERR_OK then
+            log_warning("[MRS] multiRating Set failed errCode=" .. tostring(setRatingErr) .. " userId=" .. userId)
+            -- fail-closed: keep oldRating as the in-memory value for the returned snapshot.
+            newRating = oldRating
+        end
+
+        -- Step 3: read and increment the matching counter (only one counter changes per match).
+        local wins   = self:ReadIntOr(userId, "multiWins",   0)
+        local losses = self:ReadIntOr(userId, "multiLosses", 0)
+        local draws  = self:ReadIntOr(userId, "multiDraws",  0)
+
+        local counterStorage = _DataStorageService:GetUserDataStorage(userId)
+        if outcome == "win" then
+            wins = wins + 1
+            local setErr = counterStorage:SetAndWait("multiWins", tostring(wins))
+            if setErr ~= self.ERR_OK then
+                log_warning("[MRS] multiWins Set failed errCode=" .. tostring(setErr) .. " userId=" .. userId)
+                wins = wins - 1  -- revert in-memory value on failure (fail-closed snapshot)
+            end
+        elseif outcome == "lose" then
+            losses = losses + 1
+            local setErr = counterStorage:SetAndWait("multiLosses", tostring(losses))
+            if setErr ~= self.ERR_OK then
+                log_warning("[MRS] multiLosses Set failed errCode=" .. tostring(setErr) .. " userId=" .. userId)
+                losses = losses - 1
+            end
+        elseif outcome == "draw" then
+            draws = draws + 1
+            local setErr = counterStorage:SetAndWait("multiDraws", tostring(draws))
+            if setErr ~= self.ERR_OK then
+                log_warning("[MRS] multiDraws Set failed errCode=" .. tostring(setErr) .. " userId=" .. userId)
+                draws = draws - 1
+            end
+        else
+            -- Unknown outcome: log and skip counter increment; rating adjustment still applied.
+            log_warning("[MRS] unknown outcome='" .. tostring(outcome) .. "' userId=" .. userId .. " — no counter incremented")
+        end
+
+        -- Step 4: return post-update snapshot.
+        return { rating = newRating, wins = wins, losses = losses, draws = draws }
+    end
+end
