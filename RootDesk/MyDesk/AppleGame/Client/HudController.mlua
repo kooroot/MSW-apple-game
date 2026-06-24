@@ -25,6 +25,8 @@ script HudController extends Logic
             self.modeText.Text = "랭크"
         elseif mode == "single" then
             self.modeText.Text = "싱글"
+        elseif mode == "multi" then
+            self.modeText.Text = "멀티"
         else
             self.modeText.Text = mode
         end

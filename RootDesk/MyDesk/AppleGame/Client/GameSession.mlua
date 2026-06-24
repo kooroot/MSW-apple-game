@@ -14,6 +14,8 @@ script GameSession extends Component
     property integer seed = 0
     property any grid = nil
     property number startElapsed = 0
+    property string matchId = ""
+    property number lastLiveReport = 0
 
     method void OnBeginPlay()
         -- Initializes session state. Play does not begin here; it starts when the player picks a mode
@@ -30,6 +32,8 @@ script GameSession extends Component
         self.seed = 0
         self.grid = nil
         self.startElapsed = 0
+        self.matchId = ""
+        self.lastLiveReport = 0
         log("[GameSession] ready")
     end
 
@@ -58,16 +62,9 @@ script GameSession extends Component
         log("[GameSession] requested seed mode=" .. mode)
     end
 
-    method void OnReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
-        -- Server reply, bridged from SeedService.ReceiveSeed. Ranked-already-played shows a notice;
-        -- otherwise build the board from the seed, bind drag input, and start the 120s timer.
-        -- dateKey is accepted to match the bridge signature but intentionally unused here: the run
-        -- token already encodes the date server-side, so the client never needs it.
-        if alreadyPlayed then
-            if _ResultController ~= nil then _ResultController:ShowAlreadyPlayed(personalBest) end
-            log("[GameSession] ranked already played today")
-            return
-        end
+    method void StartBoard(integer seed, string token)
+        -- Builds and renders the board from the given seed, binds drag input, and starts the 120s timer.
+        -- Called by both OnReceiveSeed (single/ranked) and StartMatchSession (multi).
         self.token = token
         self.seed = seed
         self.grid = _PuzzleCore:GenerateBoard(seed)
@@ -83,15 +80,52 @@ script GameSession extends Component
         self.active = true
         _HudController:SetTimeRatio(1.0)
         _HudController:SetTimeText(120)
-        log("[GameSession] session started seed=" .. tostring(seed))
+        log("[GameSession] board started seed=" .. tostring(seed))
+    end
+
+    method void OnReceiveSeed(string mode, integer seed, string token, integer dateKey, boolean alreadyPlayed, integer personalBest)
+        -- Server reply, bridged from SeedService.ReceiveSeed. Ranked-already-played shows a notice;
+        -- otherwise delegate board build and timer start to StartBoard.
+        -- dateKey is accepted to match the bridge signature but intentionally unused here: the run
+        -- token already encodes the date server-side, so the client never needs it.
+        if alreadyPlayed then
+            if _ResultController ~= nil then _ResultController:ShowAlreadyPlayed(personalBest) end
+            log("[GameSession] ranked already played today")
+            return
+        end
+        self:StartBoard(seed, token)
+    end
+
+    method void StartMatchSession(string matchId, integer seed, string token)
+        -- Initializes a multiplayer session. Called by MatchService (or MatchBridge) when the match
+        -- transitions to RACING and the client's seed + token are delivered. Guards double-init with
+        -- the active flag so a stale re-delivery is a no-op.
+        if self.active then return end
+        self.mode = "multi"
+        self.matchId = matchId
+        self.moves = {}
+        self.score = 0
+        self.lastLiveReport = 0
+        _HudController:SetMode("multi")
+        _HudController:SetScore(0)
+        self:StartBoard(seed, token)
     end
 
     method void OnValidClear(table rect, integer clearedCount)
         -- Scores a confirmed sum-10 clear and appends the move (relative timestamp) to the run log.
+        -- In multi mode, also sends a throttled live-score report (max once per 250ms) for the
+        -- scoreboard HUD on the server; the throttle is cosmetic and does not affect settlement.
         self.score += clearedCount
         local t = _UtilLogic.ElapsedSeconds - self.startElapsed
         self.moves[#self.moves + 1] = { rect = rect, t = t }
         _HudController:SetScore(self.score)
+        if self.mode == "multi" then
+            local now = _UtilLogic.ElapsedSeconds
+            if now - self.lastLiveReport >= 0.25 then
+                self.lastLiveReport = now
+                _MatchService:ReportLiveScore(self.matchId, self.score)
+            end
+        end
     end
 
     method void OnUpdate(number delta)
@@ -114,12 +148,18 @@ script GameSession extends Component
 
     method void EndSession()
         -- Stops play, unbinds input, and submits the run for server-side validation/scoring.
+        -- In multi mode, reports via MatchService.ReportFinished; otherwise via ScoreService.SubmitRun.
         if not self.active then return end
         self.active = false
         _BoardController:UnbindInput()
         local clientElapsed = _UtilLogic.ElapsedSeconds - self.startElapsed
-        _ScoreService:SubmitRun(self.token, self.moves, self.score, clientElapsed)
-        log("[GameSession] submitted score=" .. tostring(self.score) .. " moves=" .. tostring(#self.moves))
+        if self.mode == "multi" then
+            _MatchService:ReportFinished(self.matchId, self.token, self.moves, self.score, clientElapsed)
+            log("[GameSession] multi finished matchId=" .. self.matchId .. " score=" .. tostring(self.score))
+        else
+            _ScoreService:SubmitRun(self.token, self.moves, self.score, clientElapsed)
+            log("[GameSession] submitted score=" .. tostring(self.score) .. " moves=" .. tostring(#self.moves))
+        end
     end
 
     method void OnEndPlay()
