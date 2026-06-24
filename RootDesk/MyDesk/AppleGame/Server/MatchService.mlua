@@ -8,6 +8,7 @@ script MatchService extends Logic
     property number RACE_DEADLINE = 125
     property number COUNTDOWN = 3
     property integer tickTimerId = 0
+    property any leaveHandler = nil
 
     method void OnBeginPlay()
         -- Guard: @Logic lifecycle runs on both server and client. Server-only state init.
@@ -21,6 +22,8 @@ script MatchService extends Logic
         self._T.nextMatchSeq = 0
         self.tickTimerId = _TimerService:SetTimerRepeat(function() self:Tick() end, 1.0)
         log("[Match] MatchService OnBeginPlay — tick timer started id=" .. tostring(self.tickTimerId))
+        -- Subscribe UserLeaveEvent for forfeit handling (server only).
+        self.leaveHandler = self:ConnectEvent(UserLeaveEvent, function(ev) self:OnUserLeave(ev) end)
     end
 
     method void OnEndPlay()
@@ -28,6 +31,11 @@ script MatchService extends Logic
         if self.tickTimerId ~= 0 then
             _TimerService:ClearTimer(self.tickTimerId)
             self.tickTimerId = 0
+        end
+        -- Disconnect UserLeaveEvent handler.
+        if self.leaveHandler ~= nil then
+            self:DisconnectEvent(UserLeaveEvent, self.leaveHandler)
+            self.leaveHandler = nil
         end
     end
 
@@ -132,6 +140,7 @@ script MatchService extends Logic
             countdown   = self.COUNTDOWN,
             raceElapsed = 0,
             settled     = false,
+            venueHandle = handle,
         }
         self._T.matches[matchId] = match
         for _, uid in ipairs(roster) do
@@ -215,7 +224,41 @@ script MatchService extends Logic
     end
 
     -- -------------------------------------------------------------------------
-    -- SETTLEMENT STUB (Task 7 fills this)
+    -- ELO DELTA COMPUTATION (pure, no side effects)
+    -- -------------------------------------------------------------------------
+
+    method integer ComputeDelta(integer myRating, table oppRatings, integer myScore, table oppScores)
+        -- Pairwise ELO delta: K=32, N=total players, sum over opponents, divide by (N-1), symmetric round.
+        -- Returns 0 when there are no opponents (N=1 solo match).
+        local N = #oppRatings + 1
+        if #oppRatings == 0 then
+            return 0
+        end
+        local K = 32
+        local sum = 0.0
+        for j = 1, #oppRatings do
+            local E = 1.0 / (1.0 + 10.0 ^ ((oppRatings[j] - myRating) / 400.0))
+            local S = 0.0
+            if myScore > oppScores[j] then
+                S = 1.0
+            elseif myScore == oppScores[j] then
+                S = 0.5
+            end
+            sum = sum + (S - E)
+        end
+        local raw = K / (N - 1) * sum
+        -- Symmetric rounding: round half away from zero.
+        local rounded = 0
+        if raw >= 0 then
+            rounded = math.floor(raw + 0.5)
+        else
+            rounded = math.ceil(raw - 0.5)
+        end
+        return rounded
+    end
+
+    -- -------------------------------------------------------------------------
+    -- SETTLEMENT (Task 7)
     -- -------------------------------------------------------------------------
 
     @ExecSpace("ServerOnly")
@@ -226,12 +269,102 @@ script MatchService extends Logic
         if match.settled then return end
         match.settled = true
 
-        log("[Match] settle stub matchId=" .. match.id)
-        -- [Task7] settlement fills here — for each finished run ValidateRun -> finalScores;
-        --   winner = max finalScore (equal-top => draw); ComputeDelta (ELO) per member;
-        --   MatchRatingStore:ApplyMatchResult; LeaderboardService:SubmitRating(newRating);
-        --   scoped OnMatchResult per recipient; MatchVenue:ReleaseVenue.
-        --   ALL of that goes ABOVE the registry cleanup below (cleanup must stay last).
+        log("[Match] settle matchId=" .. match.id)
+
+        -- (a) Snapshot PRE-MATCH ratings BEFORE any write (deltas must use pre-match values;
+        --     ApplyMatchResult mutates stored rating, so snapshot before applying).
+        local preRatings = {}
+        for _, uid in ipairs(match.roster) do
+            preRatings[uid] = _MatchRatingStore:GetRating(uid)
+        end
+
+        -- (b) Authoritative final scores via ValidateRun (single-use token consumed here).
+        --     Forfeit / never-submitted / deadline-without-submit members get score 0.
+        local finalScores = {}
+        for _, uid in ipairs(match.roster) do
+            if match.submissions[uid] ~= nil then
+                local sub = match.submissions[uid]
+                local v = _ScoreService:ValidateRun(uid, sub.token, sub.moves, sub.claimedScore, sub.clientElapsed)
+                if v.accepted then
+                    finalScores[uid] = v.finalScore
+                else
+                    finalScores[uid] = 0
+                end
+            else
+                finalScores[uid] = 0
+            end
+        end
+
+        -- (c) Determine winner + per-member outcome.
+        --     maxScore = max over finalScores; count how many share maxScore.
+        local maxScore = 0
+        for _, uid in ipairs(match.roster) do
+            if finalScores[uid] > maxScore then
+                maxScore = finalScores[uid]
+            end
+        end
+
+        local maxCount = 0
+        local winnerName = ""
+        for _, uid in ipairs(match.roster) do
+            if finalScores[uid] == maxScore then
+                maxCount = maxCount + 1
+                if winnerName == "" then
+                    winnerName = match.names[uid]
+                end
+            end
+        end
+
+        -- outcome per uid: "win" if sole max, "draw" if tied max, "lose" otherwise.
+        local outcomes = {}
+        for _, uid in ipairs(match.roster) do
+            if finalScores[uid] == maxScore then
+                if maxCount == 1 then
+                    outcomes[uid] = "win"
+                else
+                    outcomes[uid] = "draw"
+                end
+            else
+                outcomes[uid] = "lose"
+            end
+        end
+
+        -- (d) Per member: compute delta, persist, board write.
+        local newRatings = {}
+        local deltas = {}
+        for _, uid in ipairs(match.roster) do
+            -- Build parallel oppRatings / oppScores arrays from every OTHER roster member.
+            local oppRatings = {}
+            local oppScores  = {}
+            for _, other in ipairs(match.roster) do
+                if other ~= uid then
+                    table.insert(oppRatings, preRatings[other])
+                    table.insert(oppScores, finalScores[other])
+                end
+            end
+            local delta = self:ComputeDelta(preRatings[uid], oppRatings, finalScores[uid], oppScores)
+            local snap = _MatchRatingStore:ApplyMatchResult(uid, delta, outcomes[uid])
+            _LeaderboardService:SubmitRating(uid, snap.rating)
+            newRatings[uid] = snap.rating
+            deltas[uid] = delta
+            log("[Match] result uid=" .. uid .. " outcome=" .. outcomes[uid] .. " final=" .. tostring(finalScores[uid]) .. " delta=" .. tostring(delta) .. " newRating=" .. tostring(snap.rating))
+        end
+        log("[Match] settled matchId=" .. match.id .. " winner=" .. tostring(winnerName))
+
+        -- (e) Release venue.
+        _MatchVenue:ReleaseVenue(match.venueHandle)
+
+        -- (f) Scoped result fan-out per recipient (Constraint 5 + 7).
+        --     Build flat parallel arrays names/scores over match.roster.
+        local rosterNames  = {}
+        local rosterScores = {}
+        for i, uid in ipairs(match.roster) do
+            rosterNames[i]  = match.names[uid]
+            rosterScores[i] = finalScores[uid]
+        end
+        for _, uid in ipairs(match.roster) do
+            self:OnMatchResult(match.id, winnerName, outcomes[uid], deltas[uid], newRatings[uid], rosterNames, rosterScores, uid)
+        end
 
         -- Registry cleanup (stays at the end of settlement).
         for _, uid in ipairs(match.roster) do
@@ -305,15 +438,16 @@ script MatchService extends Logic
 
     @ExecSpace("Server")
     method void ReportFinished(string matchId, string token, table moves, integer claimedScore, number clientElapsed)
-        -- Client -> server STUB for Task 6: verify membership, store submission, mark finished.
-        -- [Task7] settlement fills here — ELO, replay validation, OnMatchResult fan-out.
+        -- Client -> server: verify membership, store submission, mark finished.
+        -- Settlement is driven by the Tick FSM (TickRacing returns true when all finished or
+        -- RACE_DEADLINE is hit); do NOT call SettleMatch directly here to avoid mid-iteration mutation.
         local match = self._T.matches[matchId]
         if match == nil then return end
         if match.rosterSet[senderUserId] == nil then
             log("[Match] ReportFinished rejected — not in roster userId=" .. senderUserId .. " matchId=" .. matchId)
             return
         end
-        -- Store submission payload for Task 7 to validate and score.
+        -- Store submission payload for ValidateRun in SettleMatch.
         match.submissions[senderUserId] = {
             token          = token,
             moves          = moves,
@@ -322,7 +456,33 @@ script MatchService extends Logic
         }
         match.finished[senderUserId] = true
         log("[Match] finished userId=" .. senderUserId .. " matchId=" .. matchId .. " claimedScore=" .. tostring(claimedScore))
-        -- [Task7] settlement fills here
+    end
+
+    -- -------------------------------------------------------------------------
+    -- FORFEIT HANDLER (UserLeaveEvent)
+    -- -------------------------------------------------------------------------
+
+    method void OnUserLeave(any ev)
+        -- Handles a user leaving mid-game: removes from queue and marks forfeit in active match.
+        -- Guard: @Logic lifecycle runs on both sides; forfeit state is server-only.
+        if not self:IsServer() then return end
+        local uid = ev.UserId
+        -- Remove from matchmaking queue (idempotent).
+        self._T.queue[uid] = nil
+        -- If the user is in an active match, mark them as finished with score 0 (forfeit).
+        if self._T.userToMatch[uid] ~= nil then
+            local match = self._T.matches[self._T.userToMatch[uid]]
+            if match ~= nil and not match.settled then
+                match.finished[uid] = true
+                match.scores[uid] = 0
+                match.submissions[uid] = nil
+                log("[Match] forfeit uid=" .. uid .. " matchId=" .. match.id)
+                -- Do NOT call SettleMatch here — the Tick FSM will settle once all roster
+                -- members are finished (the leaver is now finished; remaining players finishing
+                -- or RACE_DEADLINE triggers it). Keeps settlement on the single Tick-driven
+                -- path and avoids mid-iteration mutation of _T.matches.
+            end
+        end
     end
 
     -- -------------------------------------------------------------------------
@@ -365,6 +525,18 @@ script MatchService extends Logic
         -- [Task9/10 bridge] _MatchHudController does not exist yet (Task 10 creates it).
         if _MatchHudController ~= nil then
             _MatchHudController:OnLiveScoreboard(matchId, names, scores, userIds)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnMatchResult(string matchId, string winnerName, string outcomeForMe, integer myRatingDelta, integer myNewRating, table names, table scores)
+        -- Server -> one client: delivers the final match result for this recipient.
+        -- Per-recipient values (outcomeForMe/myRatingDelta/myNewRating) are precomputed server-side
+        -- (Constraint 7). targetUserId is appended at the call site — NOT a declared parameter.
+        log("[Match] OnMatchResult matchId=" .. tostring(matchId) .. " outcome=" .. tostring(outcomeForMe) .. " delta=" .. tostring(myRatingDelta) .. " newRating=" .. tostring(myNewRating))
+        -- [Task11 bridge] _MatchResultController does not exist yet (Task 11 creates it).
+        if _MatchResultController ~= nil then
+            _MatchResultController:ShowResult(outcomeForMe, winnerName, myRatingDelta, myNewRating, names, scores)
         end
     end
 
