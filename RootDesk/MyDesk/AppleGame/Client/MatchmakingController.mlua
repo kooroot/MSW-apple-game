@@ -1,0 +1,114 @@
+@Logic
+@ExecSpace("ClientOnly")
+script MatchmakingController extends Logic
+
+    -- UI entity / component refs. Injected by the UIBuilder bind step (placeholder UUIDs until then).
+    property Entity panel = "986c0908-f43e-463f-b674-d5656fa813da"
+    property Entity dimmer = "8b2e8574-8d0c-40bf-b9c7-22a1d995858a"
+    property Entity matchFoundOverlay = "20a6f8e1-695a-46dc-abd6-db18ff7101d0"
+    property TextComponent searchingLabel = "6b87e093-112f-48b7-bf95-60cd777840ae"
+    property TextComponent countLabel = "20ed17f1-8df4-4ed2-bf3c-6806793f21e0"
+    property ButtonComponent btnCancel = "64b2c9a2-3b1b-4436-b539-22b7b1794286"
+    property TextComponent rosterText = "3db5ad3c-9e22-4bc1-bd10-d408b6cb41ba"
+    property TextComponent countdownNumber = "e2699858-bc3f-437e-bc9a-9d584cf49c25"
+
+    -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
+    property any cancelHandler = nil
+
+    method void OnBeginPlay()
+        -- Wires the Cancel button. A @Logic OnBeginPlay runs on BOTH server and client; on the
+        -- server every UI ref is nil, so each deref is isvalid-guarded (same hazard as TitleController).
+        -- This screen starts hidden (matchmaking is not the entry screen; the title is).
+        -- We call Hide() defensively rather than setting panel Enable=false in .ui authoring,
+        -- because the .ui group itself must keep default_show=true so this @Logic's OnBeginPlay runs.
+        self:Hide()
+        if isvalid(self.btnCancel) then
+            self.cancelHandler = self.btnCancel.Entity:ConnectEvent(ButtonClickEvent, self.OnCancel)
+        end
+        log("[MatchmakingController] ready")
+    end
+
+    method void Show()
+        -- Enables the matchmaking panel + dimmer in searching state (overlay hidden).
+        -- Then enqueues the local player into the matchmaking queue (server RPC).
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        -- Reset to searching state (overlay off, searching labels on).
+        if isvalid(self.searchingLabel) then self.searchingLabel.Entity.Enable = true end
+        if isvalid(self.countLabel) then self.countLabel.Entity.Enable = true end
+        if isvalid(self.matchFoundOverlay) then self.matchFoundOverlay.Enable = false end
+        -- Fire the server-side enqueue RPC (ClientOnly -> @ExecSpace("Server") on MatchService).
+        _MatchService:EnqueueMatch("multi")
+        log("[MatchmakingController] show -> enqueue")
+    end
+
+    method void Hide()
+        -- Hides the entire matchmaking panel. Safe no-op on the server (refs are nil).
+        if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.dimmer) then self.dimmer.Enable = false end
+    end
+
+    method void OnCancel()
+        -- Cancel button handler: removes the local player from the queue and hides the screen.
+        _MatchService:CancelQueue()
+        self:Hide()
+        log("[MatchmakingController] cancelled")
+    end
+
+    method void OnMatchFound(table rosterNames, integer mySlot)
+        -- Called by MatchService @Client bridge when a match is formed.
+        -- Switches the panel from searching state to match-found/roster view.
+        -- rosterNames is a flat array of display-name strings (parallel to match.roster).
+        log("[MatchmakingController] match found slot=" .. tostring(mySlot))
+        -- Hide searching labels.
+        if isvalid(self.searchingLabel) then self.searchingLabel.Entity.Enable = false end
+        if isvalid(self.countLabel) then self.countLabel.Entity.Enable = false end
+        -- Show the match-found overlay.
+        if isvalid(self.matchFoundOverlay) then self.matchFoundOverlay.Enable = true end
+        -- Render roster names as a single newline-joined string.
+        if isvalid(self.rosterText) then
+            local names = {}
+            for i = 1, #rosterNames do
+                table.insert(names, tostring(i) .. ". " .. tostring(rosterNames[i]))
+            end
+            self.rosterText.Text = table.concat(names, "\n")
+        end
+        -- Show a placeholder countdown while the server counts down.
+        if isvalid(self.countdownNumber) then
+            self.countdownNumber.Text = "..."
+        end
+    end
+
+    method void OnCountdown(string matchId, integer n)
+        -- Called by MatchService @Client bridge each countdown tick.
+        -- Renders `n` as the big countdown number; matchId is ignored for display.
+        log("[MatchmakingController] countdown n=" .. tostring(n))
+        if isvalid(self.countdownNumber) then
+            self.countdownNumber.Text = tostring(n)
+        end
+    end
+
+    method void OnMatchStart(string matchId, integer seed, string token, table rosterNames)
+        -- Called by MatchService @Client bridge when the countdown reaches 0.
+        -- Resolves GameSession off the local player's current map and hands off to gameplay.
+        log("[MatchmakingController] match start seed=" .. tostring(seed) .. " -> StartMatchSession")
+        local player = _UserService.LocalPlayer
+        if not isvalid(player) then return end
+        local mapEnt = player.CurrentMap
+        if not isvalid(mapEnt) then return end
+        local session = mapEnt:GetComponent("script.GameSession")
+        if not isvalid(session) then return end
+        -- GameSession:StartMatchSession builds the multi board from the shared seed.
+        session:StartMatchSession(matchId, seed, token)
+        self:Hide()
+    end
+
+    method void OnEndPlay()
+        -- Disconnects the Cancel button handler (mirror of OnBeginPlay).
+        if self.cancelHandler ~= nil and isvalid(self.btnCancel) then
+            self.btnCancel.Entity:DisconnectEvent(ButtonClickEvent, self.cancelHandler)
+        end
+        self.cancelHandler = nil
+    end
+
+end
