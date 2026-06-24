@@ -75,6 +75,15 @@ script ScoreService extends Logic
         end
 
         -- (5) replay is the only source of truth for the score.
+        -- [SA-2 accepted risk] For ranked/multi the seed is delivered to the client (so it can render
+        -- the board), and the board is deterministic — a determined client can therefore pre-compute
+        -- a near-optimal solve and submit a superhuman-but-replay-valid score. This is inherent to the
+        -- "client knows seed + replay-authoritative" design and acceptable for this casual scope; the
+        -- only true fix is server-side board streaming (a larger redesign). Replay fully defends the
+        -- STATED threat model (the score must equal a real solve of the seed — a fabricated/higher
+        -- claim is rejected); play-rate/optimality feasibility is a knowingly accepted gap, not an
+        -- oversight. A live-vs-final cross-check was rejected as false security (the client also drives
+        -- ReportLiveScore and could pace fake live scores to match).
         local r = _PuzzleCore:Replay(session.seed, moves)
         if not (r.ok and r.score == claimedScore) then
             log_warning("[SCORE] reject replay_mismatch ok=" .. tostring(r.ok) .. " replayScore=" .. tostring(r.score) .. " claimed=" .. tostring(claimedScore))

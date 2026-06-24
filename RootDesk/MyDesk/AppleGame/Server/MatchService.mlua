@@ -41,6 +41,15 @@ script MatchService extends Logic
 
     -- -------------------------------------------------------------------------
     -- FSM TICK (1 Hz, server only)
+    --
+    -- [FCL-1 note] SettleMatch (Step 3) performs yielding AndWait writes; if that yield spans a
+    -- 1 s timer boundary the timer can fire Tick() re-entrantly while the prior Tick is suspended.
+    -- This is SAFE: the settling match is state=="FINISHED" (not handled by the loop below) and is
+    -- settled-guarded, so there is no double-settle. The only effect is that unrelated
+    -- COUNTDOWN/RACING matches may advance one extra tick during a slow (>1 s) persist. Benign at
+    -- the default MATCH_SIZE=1 (single-member matches settle with no concurrent match to skew). A
+    -- reentrancy flag was considered and deliberately omitted: a throw between set/clear would
+    -- freeze the FSM permanently — a strictly worse failure than a one-tick timing skew.
     -- -------------------------------------------------------------------------
 
     method void Tick()
@@ -315,6 +324,14 @@ script MatchService extends Logic
             end
         end
 
+        -- [ES-1] No sole winner when the max is tied (a genuine all-draw, or an all-forfeit where
+        -- every finalScore is 0): clear winnerName so the settle log + result fan-out report a draw
+        -- instead of crowning roster[1]. The client result UI already renders from outcomeForMe
+        -- (winnerName is the headline only), so this just keeps the server log honest.
+        if maxCount > 1 then
+            winnerName = ""
+        end
+
         -- outcome per uid: "win" if sole max, "draw" if tied max, "lose" otherwise.
         local outcomes = {}
         for _, uid in ipairs(match.roster) do
@@ -447,6 +464,19 @@ script MatchService extends Logic
         if match == nil then return end
         if match.rosterSet[senderUserId] == nil then
             log("[Match] ReportFinished rejected — not in roster userId=" .. senderUserId .. " matchId=" .. matchId)
+            return
+        end
+        -- [SA-1] Bind the submission to THIS match: the token MUST be the authoritative per-member
+        -- token minted for this user in FormMatch (match.tokens[uid], issued via IssueSharedFor over
+        -- match.sharedSeed). Without this check a client could submit a token issued in a DIFFERENT
+        -- context — e.g. a single/ranked seed it requested, fully knows, and pre-solved offline — and
+        -- ValidateRun (which is mode/match-agnostic: it only checks owned + unconsumed + window +
+        -- replay==claimed against the token's OWN seed) would accept it, forging an arbitrary
+        -- finalScore and farming ranked ELO without ever playing the shared board. rosterSet membership
+        -- above guarantees match.tokens[senderUserId] is a non-nil string, so a foreign or another
+        -- member's token can never match.
+        if token ~= match.tokens[senderUserId] then
+            log("[Match] ReportFinished rejected — token mismatch userId=" .. senderUserId .. " matchId=" .. matchId)
             return
         end
         -- Store submission payload for ValidateRun in SettleMatch.
