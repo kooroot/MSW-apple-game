@@ -1,0 +1,280 @@
+@Logic
+script MatchTest extends Logic
+    -- Server-only test harness for Phase 2 multiplayer ELO + settlement. Mirrors ServerAuthTest /
+    -- PuzzleCoreTest. Run via maker_execute_script (server_main): _MatchTest:RunAll().
+    -- NO 2nd client required: ComputeDelta is a pure function; the settlement path is exercised with
+    -- SYNTHETIC roster userIds plus real shared-seed tokens, injected directly into MatchService._T
+    -- (the "direct registry injection" seam) and settled via _MatchService:SettleMatch.
+    property integer passed = 0
+    property integer failed = 0
+    property integer BOARD_MULTI_RATING = 4
+    property integer runSeq = 0
+
+    @ExecSpace("ServerOnly")
+    method void Expect(string name, boolean cond)
+        -- Records one boolean assertion to the server log for maker_logs inspection.
+        if cond then
+            self.passed += 1
+            log("[TEST PASS] " .. name)
+        else
+            self.failed += 1
+            log_error("[TEST FAIL] " .. name)
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void ExpectEq(string name, integer actual, integer expected)
+        -- Integer-equality assertion that logs actual vs expected on mismatch (ELO-delta debugging).
+        if actual == expected then
+            self.passed += 1
+            log("[TEST PASS] " .. name .. " (=" .. tostring(actual) .. ")")
+        else
+            self.failed += 1
+            log_error("[TEST FAIL] " .. name .. " actual=" .. tostring(actual) .. " expected=" .. tostring(expected))
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void Reset()
+        -- Clears counters before a suite run.
+        self.passed = 0
+        self.failed = 0
+    end
+
+    @ExecSpace("ServerOnly")
+    method void Summary()
+        -- Emits the final tally line that maker_logs is checked against.
+        log("[TEST SUMMARY] passed=" .. self.passed .. " failed=" .. self.failed)
+    end
+
+    @ExecSpace("ServerOnly")
+    method string LocalUserId()
+        -- Returns a real userId from the first connected user, or "" if none is connected yet (e.g. the
+        -- suite is run before a player entity is ready). Server-side; LocalPlayer is client-only.
+        -- Callers MUST handle the "" case — see TestBoardWrite's bw_has_uid guard.
+        local users = _UserService.UserEntities
+        if users == nil then return "" end
+        for _, userEntity in ipairs(users.Values) do
+            if isvalid(userEntity) then
+                return userEntity.PlayerComponent.UserId
+            end
+        end
+        return ""
+    end
+
+    @ExecSpace("ServerOnly")
+    method string RunSalt()
+        -- Per-call suffix so synthetic userIds / matchIds are fresh: DataStorage persists across runs,
+        -- so salting keeps GetRating defaults at 1000 and avoids residue. H_M_S gives cross-session
+        -- variance; the monotonic `runSeq` counter guarantees uniqueness ACROSS calls within one play
+        -- session even if two RunAll()s land in the same wall-clock second (clock granularity is 1s).
+        self.runSeq = self.runSeq + 1
+        local now = DateTime.UtcNow
+        return tostring(now.Hour) .. "_" .. tostring(now.Minute) .. "_" .. tostring(now.Second) .. "_" .. tostring(self.runSeq)
+    end
+
+    -- =========================================================================
+    -- ComputeDelta (pure pairwise ELO: K=32, sum over opponents, /(N-1), round half away from 0)
+    -- =========================================================================
+
+    @ExecSpace("ServerOnly")
+    method void TestComputeDelta()
+        -- Table-driven checks against MatchService:ComputeDelta. Expected values hardcoded so a formula
+        -- change is caught (not recomputed with the same code under test).
+        -- 1v1 equal ratings: full K swing.
+        self:ExpectEq("elo_1000v1000_win",  _MatchService:ComputeDelta(1000, {1000}, 10, {5}),   16)
+        self:ExpectEq("elo_1000v1000_lose", _MatchService:ComputeDelta(1000, {1000}, 5,  {10}), -16)
+        self:ExpectEq("elo_1000v1000_draw", _MatchService:ComputeDelta(1000, {1000}, 7,  {7}),    0)
+        -- Favorite (1200) beats underdog (1000): smaller expected gain. raw=32*(1-0.7597)=7.69 -> 8.
+        self:ExpectEq("elo_1200v1000_win",  _MatchService:ComputeDelta(1200, {1000}, 10, {5}),    8)
+        -- N=1 (no opponents): always 0.
+        self:ExpectEq("elo_solo_zero",      _MatchService:ComputeDelta(1000, {}, 10, {}),         0)
+        -- N=3, beat one stronger (1100) + one equal (1000): raw=16*(0.640065+0.5)=18.241 -> 18.
+        self:ExpectEq("elo_n3_beat_both",   _MatchService:ComputeDelta(1000, {1100, 1000}, 100, {50, 50}),  18)
+        -- N=3, lose to both: raw=16*(-0.359935-0.5)=-13.759 -> -14 (round half AWAY from zero, not toward).
+        self:ExpectEq("elo_n3_lose_both",   _MatchService:ComputeDelta(1000, {1100, 1000}, 0, {50, 50}),   -14)
+        -- N=3 mixed vs equals (beat one, lose one): per-pair contributions cancel -> 0.
+        self:ExpectEq("elo_n3_mixed_zero",  _MatchService:ComputeDelta(1000, {1000, 1000}, 50, {40, 60}),   0)
+    end
+
+    -- =========================================================================
+    -- MatchRatingStore (default, win/lose/draw, floor>=1)
+    -- =========================================================================
+
+    @ExecSpace("ServerOnly")
+    method void TestRatingStore()
+        -- Default rating, per-outcome rating+counter updates, and the floor>=1 invariant (GLOBAL #2).
+        local salt = self:RunSalt()
+        local uW = "mt_rsW_" .. salt
+        local uL = "mt_rsL_" .. salt
+        local uD = "mt_rsD_" .. salt
+        local uF = "mt_rsF_" .. salt
+
+        self:ExpectEq("rs_default_1000", _MatchRatingStore:GetRating(uW), 1000)
+
+        local snapW = _MatchRatingStore:ApplyMatchResult(uW, 16, "win")
+        self:ExpectEq("rs_win_rating", snapW.rating, 1016)
+        self:ExpectEq("rs_win_counter", snapW.wins, 1)
+        self:ExpectEq("rs_win_persisted", _MatchRatingStore:GetRating(uW), 1016)
+
+        local snapL = _MatchRatingStore:ApplyMatchResult(uL, -16, "lose")
+        self:ExpectEq("rs_lose_rating", snapL.rating, 984)
+        self:ExpectEq("rs_lose_counter", snapL.losses, 1)
+
+        local snapD = _MatchRatingStore:ApplyMatchResult(uD, 0, "draw")
+        self:ExpectEq("rs_draw_rating", snapD.rating, 1000)
+        self:ExpectEq("rs_draw_counter", snapD.draws, 1)
+
+        -- A large negative delta must clamp to 1 (never 0 or negative): SetScoreAndWait rejects < 1.
+        local snapF = _MatchRatingStore:ApplyMatchResult(uF, -9999, "lose")
+        self:ExpectEq("rs_floor_clamped_to_1", snapF.rating, 1)
+        self:Expect("rs_floor_never_below_1", snapF.rating >= 1)
+    end
+
+    -- =========================================================================
+    -- Settlement (full SettleMatch via registry injection — winner/outcome/deltas/cleanup)
+    -- =========================================================================
+
+    @ExecSpace("ServerOnly")
+    method table FindNPairs(integer seed, integer n)
+        -- Returns up to n valid single-pair moves: each is a horizontally-adjacent pair summing to 10
+        -- (ApplyMove clears 2 cells -> +2 score). One pair per distinct row so the moves never interfere
+        -- on Replay, with strictly increasing timestamps. Crafts ValidateRun-passable submissions.
+        local g = _PuzzleCore:GenerateBoard(seed)
+        local moves = {}
+        local t = 1.0
+        for r = 0, _PuzzleCore.ROWS - 1 do
+            if #moves >= n then break end
+            for c = 0, _PuzzleCore.COLS - 2 do
+                if g[r][c] + g[r][c + 1] == 10 then
+                    table.insert(moves, { rect = { c1 = c, r1 = r, c2 = c + 1, r2 = r }, t = t })
+                    t = t + 1.0
+                    break
+                end
+            end
+        end
+        return moves
+    end
+
+    @ExecSpace("ServerOnly")
+    method void TestSettlement()
+        -- End-to-end SettleMatch with no 2nd client: two synthetic users with real shared-seed tokens
+        -- and crafted winning/losing move sets, injected directly into MatchService._T. Asserts outcome
+        -- (counters), ELO deltas (ratings), the re-entry guard, and _T registry cleanup.
+        -- EXPECTED, BENIGN engine logs from settling with synthetic (non-connected) users — NOT defects:
+        --   * [LeaderboardService] "SubmitRating: player not ready" (Warning) — fake uids have no player
+        --     entity, so the per-member board write no-ops. The real board-4 write is asserted separately
+        --     in TestBoardWrite (with a real connected player).
+        --   * [LEA-3032] FailedSendToClient (Error) — the OnMatchResult @Client result fan-out targets
+        --     each roster uid; synthetic uids have no client, so the send fails. Settlement still
+        --     completes correctly (all asserts below pass). Both succeed in a real 2-player match.
+        local salt = self:RunSalt()
+        local matchId = "mt_match_" .. salt
+        local uidA = "mt_userA_" .. salt
+        local uidB = "mt_userB_" .. salt
+
+        self:ExpectEq("settle_preA_default", _MatchRatingStore:GetRating(uidA), 1000)
+        self:ExpectEq("settle_preB_default", _MatchRatingStore:GetRating(uidB), 1000)
+
+        local sharedSeed = _SeedService:NewMatchSeed(matchId)
+        local movesA = self:FindNPairs(sharedSeed, 2)   -- 2 pairs -> score 4 (winner)
+        local movesB = self:FindNPairs(sharedSeed, 1)   -- 1 pair  -> score 2 (loser)
+        self:Expect("settle_found_movesA", #movesA == 2)
+        self:Expect("settle_found_movesB", #movesB == 1)
+        -- Self-diagnosing guard: if this seed's board lacked enough sum-to-10 pairs (astronomically
+        -- unlikely on a 17x10 board of 1-9), stop here so the failure reads "movesA/B too short"
+        -- rather than cascading into an opaque settle_A_rating_win mismatch downstream.
+        if #movesA < 2 or #movesB < 1 then return end
+
+        local replayA = _PuzzleCore:Replay(sharedSeed, movesA)
+        local replayB = _PuzzleCore:Replay(sharedSeed, movesB)
+        self:Expect("settle_replayA_ok", replayA.ok == true and replayA.score == 4)
+        self:Expect("settle_replayB_ok", replayB.ok == true and replayB.score == 2)
+
+        local issuedA = _SeedService:IssueSharedFor(matchId, uidA, sharedSeed)
+        local issuedB = _SeedService:IssueSharedFor(matchId, uidB, sharedSeed)
+
+        -- Build the MatchRecord exactly as MatchService.FormMatch would (only the fields SettleMatch reads).
+        -- state="FINISHED": the exact state a real match is in when TickRacing hands it to SettleMatch.
+        -- This also keeps the live 1 Hz tick from touching the injected record — Tick() only advances
+        -- COUNTDOWN/RACING matches, and TickRacing would do arithmetic on raceElapsed (which this
+        -- synthetic record omits). A non-FINISHED state here leaks a [LEA-2001] nil-arithmetic error
+        -- from the tick that fires during settlement's AndWait yields.
+        local match = {}
+        match.id = matchId
+        match.settled = false
+        match.state = "FINISHED"
+        match.roster = { uidA, uidB }
+        match.names = { [uidA] = "TesterA", [uidB] = "TesterB" }
+        match.venueHandle = _MatchVenue:AllocateVenue(matchId, match.roster)
+        match.submissions = {}
+        match.submissions[uidA] = { token = issuedA.token, moves = movesA, claimedScore = replayA.score, clientElapsed = 6.0 }
+        match.submissions[uidB] = { token = issuedB.token, moves = movesB, claimedScore = replayB.score, clientElapsed = 6.0 }
+
+        -- Direct registry injection (the seam the brief calls for) + prove it took before settling.
+        _MatchService._T.matches[matchId] = match
+        _MatchService._T.userToMatch[uidA] = matchId
+        _MatchService._T.userToMatch[uidB] = matchId
+        self:Expect("settle_injected", _MatchService._T.matches[matchId] ~= nil)
+
+        _MatchService:SettleMatch(match)
+
+        -- Outcome: A (score 4) is sole max -> win (+16); B (score 2) -> lose (-16). Pre-ratings 1000.
+        self:ExpectEq("settle_A_rating_win",      _MatchRatingStore:GetRating(uidA), 1016)
+        self:ExpectEq("settle_B_rating_lose",     _MatchRatingStore:GetRating(uidB), 984)
+        self:ExpectEq("settle_A_wins_counter",    _MatchRatingStore:ReadIntOr(uidA, "multiWins", 0), 1)
+        self:ExpectEq("settle_B_losses_counter",  _MatchRatingStore:ReadIntOr(uidB, "multiLosses", 0), 1)
+
+        -- Registry cleanup: match record + both user->match mappings removed at end of settlement.
+        self:Expect("settle_match_cleared",        _MatchService._T.matches[matchId] == nil)
+        self:Expect("settle_userToMatchA_cleared", _MatchService._T.userToMatch[uidA] == nil)
+        self:Expect("settle_userToMatchB_cleared", _MatchService._T.userToMatch[uidB] == nil)
+
+        -- Re-entry guard: settling the same (already-settled) record again is a no-op (no double-credit).
+        _MatchService:SettleMatch(match)
+        self:ExpectEq("settle_reentry_noop_A", _MatchRatingStore:GetRating(uidA), 1016)
+        self:ExpectEq("settle_reentry_winsA",  _MatchRatingStore:ReadIntOr(uidA, "multiWins", 0), 1)
+    end
+
+    -- =========================================================================
+    -- Board-4 write (real connected player — the only path where SubmitRating can write the board)
+    -- =========================================================================
+
+    @ExecSpace("ServerOnly")
+    method void TestBoardWrite()
+        -- SubmitRating(real player, rating) -> force snapshot -> the player's entry is on board 4 with
+        -- that rating. Writes the player's CURRENT stored rating (benign: the board reflects truth).
+        local uid = self:LocalUserId()
+        self:Expect("bw_has_uid", uid ~= "")
+        if uid == "" then return end
+        local entity = _UserService:GetUserEntityByUserId(uid)
+        if not isvalid(entity) or entity.PlayerComponent == nil then
+            self:Expect("bw_player_entity_present", false)
+            return
+        end
+        local profileCode = entity.PlayerComponent.ProfileCode
+        local rating = _MatchRatingStore:GetRating(uid)
+        _LeaderboardService:SubmitRating(uid, rating)
+        _RankingDataStorageLogic:TryForceUpdateSharedMemory(self.BOARD_MULTI_RATING)
+        local snap = _RankingDataStorageLogic:GetRankingSnapshot(self.BOARD_MULTI_RATING)
+        self:Expect("bw_snapshot_nonnil", snap ~= nil)
+        if snap ~= nil then
+            local mine = snap:GetRankingDataByProfileCode(profileCode)
+            self:Expect("bw_my_entry_present", mine ~= nil)
+            if mine ~= nil then
+                self:ExpectEq("bw_score_matches_rating", mine.Score, rating)
+            end
+        end
+    end
+
+    @ExecSpace("ServerOnly")
+    method void RunAll()
+        -- One-call full suite for the MSW test loop (server context): _MatchTest:RunAll().
+        self:Reset()
+        self:TestComputeDelta()
+        self:TestRatingStore()
+        self:TestSettlement()
+        self:TestBoardWrite()
+        self:Summary()
+    end
+end
