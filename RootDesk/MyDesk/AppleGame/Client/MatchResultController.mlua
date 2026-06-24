@@ -1,0 +1,126 @@
+@Logic
+@ExecSpace("ClientOnly")
+script MatchResultController extends Logic
+
+    -- UI entity / component refs. Injected by the UIBuilder bind step (placeholder UUIDs until then).
+    property Entity panel = "1db805b9-4c60-410a-a2a3-7e7cca8af65e"
+    property Entity dimmer = "1bff72f4-30de-447e-8025-39e3348d1b67"
+    property TextComponent banner = "9343b4f3-6aea-4e6e-aa97-5909be49e979"
+    property TextComponent ratingLine = "ad56e42b-a509-4664-be00-c9e2ce50045f"
+    property Entity rowTemplate = "e42ef07e-028b-4fa0-847a-89488e090d12"
+    property ButtonComponent btnLobby = "0e8fd23e-2658-4504-8b31-47032d4b9561"
+
+    -- EventHandlerBase token must be `any` (msw-scripting §5); nil until OnBeginPlay wires it.
+    property any lobbyHandler = nil
+
+    -- Cloned row entities. Must be `any` (table); nil until OnBeginPlay initialises to {}.
+    property any rows = nil
+
+    method void OnBeginPlay()
+        -- Hides the popup at start, disables row template, and wires the lobby button. A @Logic
+        -- OnBeginPlay runs on BOTH server and client; on the server every UI ref is nil, so each
+        -- deref is isvalid-guarded (same pattern as ResultController / LeaderboardController).
+        self.rows = {}
+        if isvalid(self.rowTemplate) then self.rowTemplate:SetEnable(false) end
+        self:Hide()
+        if isvalid(self.btnLobby) then
+            self.lobbyHandler = self.btnLobby.Entity:ConnectEvent(ButtonClickEvent, self.OnLobby)
+        end
+        log("[MatchResultController] ready")
+    end
+
+    method void ClearRows()
+        -- Destroys all cloned row entities and resets the cache table.
+        if self.rows == nil then self.rows = {} return end
+        for i, row in ipairs(self.rows) do
+            if isvalid(row) then row:Destroy() end
+        end
+        self.rows = {}
+    end
+
+    method void ShowResult(string outcomeForMe, string winnerName, integer myRatingDelta, integer myNewRating, table names, table scores)
+        -- Populates banner, rating line, and standings list, then shows the popup.
+        -- outcomeForMe is one of "win" / "lose" / "draw" (lowercase from MatchService).
+        -- winnerName is part of the MatchService caller signature (MatchService:541) but intentionally
+        -- unused here: the winner is conveyed by the descending-sorted standings (top row) plus the
+        -- outcome banner, so naming the winner separately would be redundant.
+        log("[MatchResultController] show outcome=" .. outcomeForMe .. " newRating=" .. tostring(myNewRating))
+
+        -- Banner text + optional tint
+        if isvalid(self.banner) then
+            if outcomeForMe == "win" then
+                self.banner.Text = "승리"
+                self.banner.FontColor = Color(0.20, 0.80, 0.25, 1.0)
+            elseif outcomeForMe == "lose" then
+                self.banner.Text = "패배"
+                self.banner.FontColor = Color(0.90, 0.25, 0.20, 1.0)
+            else
+                self.banner.Text = "무승부"
+                self.banner.FontColor = Color(0.65, 0.65, 0.65, 1.0)
+            end
+        end
+
+        -- Rating line: "<before> → <after> (<signed delta>)"
+        if isvalid(self.ratingLine) then
+            local before = myNewRating - myRatingDelta
+            local sign = ""
+            if myRatingDelta >= 0 then
+                sign = "+" .. tostring(myRatingDelta)
+            else
+                sign = tostring(myRatingDelta)
+            end
+            self.ratingLine.Text = tostring(before) .. " → " .. tostring(myNewRating) .. " (" .. sign .. ")"
+        end
+
+        -- Standings list: sort by score descending via index permutation (never reorder source arrays)
+        self:ClearRows()
+        if isvalid(self.rowTemplate) then
+            local n = #names
+            -- Build index permutation
+            local idx = {}
+            for i = 1, n do idx[i] = i end
+            table.sort(idx, function(a, b) return scores[a] > scores[b] end)
+
+            for rank = 1, n do
+                local srcIdx = idx[rank]
+                local row = self.rowTemplate:Clone("Row_" .. tostring(rank))
+                if isvalid(row) then
+                    row:SetEnable(true)
+                    local nameNode = row:GetChildByName("Name", false)
+                    if isvalid(nameNode) then nameNode.TextComponent.Text = tostring(names[srcIdx]) end
+                    local scoreNode = row:GetChildByName("Score", false)
+                    if isvalid(scoreNode) then scoreNode.TextComponent.Text = tostring(scores[srcIdx]) end
+                    table.insert(self.rows, row)
+                end
+            end
+        end
+
+        -- Show panel + dimmer
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+    end
+
+    method void Hide()
+        -- Closes the popup. Guarded so the server-side OnBeginPlay call is a safe no-op.
+        if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.dimmer) then self.dimmer.Enable = false end
+    end
+
+    method void OnLobby()
+        -- Returns to lobby: plays click SFX, hides this popup, shows title, hides match HUD.
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
+        self:Hide()
+        if _TitleController ~= nil then _TitleController:Show() end
+        if _MatchHudController ~= nil then _MatchHudController:Hide() end
+    end
+
+    method void OnEndPlay()
+        -- Disconnects the lobby button handler and destroys cloned rows (mirror of OnBeginPlay).
+        if self.lobbyHandler ~= nil and isvalid(self.btnLobby) then
+            self.btnLobby.Entity:DisconnectEvent(ButtonClickEvent, self.lobbyHandler)
+        end
+        self.lobbyHandler = nil
+        self:ClearRows()
+    end
+
+end
