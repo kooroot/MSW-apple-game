@@ -31,6 +31,9 @@ script MatchmakingController extends Logic
     method void Show()
         -- Enables the matchmaking panel + dimmer in searching state (overlay hidden).
         -- Then enqueues the local player into the matchmaking queue (server RPC).
+        -- Idempotent on the controller side: if already showing (panel enabled), skip re-enqueue.
+        -- MatchService also guards server-side, but this avoids a redundant RPC + spurious log.
+        if isvalid(self.panel) and self.panel.Enable then return end
         if isvalid(self.panel) then self.panel.Enable = true end
         if isvalid(self.dimmer) then self.dimmer.Enable = true end
         -- Reset to searching state (overlay off, searching labels on).
@@ -91,6 +94,8 @@ script MatchmakingController extends Logic
     method void OnMatchStart(string matchId, integer seed, string token, table rosterNames)
         -- Called by MatchService @Client bridge when the countdown reaches 0.
         -- Resolves GameSession off the local player's current map and hands off to gameplay.
+        -- rosterNames is accepted to match the bridge signature but intentionally unused here:
+        -- the roster was already rendered by OnMatchFound; this method only starts the board.
         log("[MatchmakingController] match start seed=" .. tostring(seed) .. " -> StartMatchSession")
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
