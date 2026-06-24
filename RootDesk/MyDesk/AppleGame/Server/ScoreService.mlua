@@ -87,6 +87,10 @@ script ScoreService extends Logic
     @ExecSpace("ServerOnly")
     method table SubmitFor(string userId, string token, table moves, integer claimedScore, number clientElapsed)
         -- Thin wrapper: delegates validation to ValidateRun, then applies side effects on accept.
+        -- Capture the session BEFORE validation: ValidateRun calls MarkConsumed, so reading the
+        -- record here keeps the accept-path mode lookup independent of whether a future
+        -- _SeedService change ever purges consumed sessions (the table ref stays valid this scope).
+        local session = _SeedService:GetSession(token)
         local v = self:ValidateRun(userId, token, moves, claimedScore, clientElapsed)
 
         if not v.accepted then
@@ -95,8 +99,8 @@ script ScoreService extends Logic
 
         -- Accept: single-mode updates the keep-max personal best; ranked NEVER pollutes it
         -- (ranked still reads the stored single best so the result popup can show it read-only),
-        -- and (ranked) fans out to the leaderboard (Plan 3 seam).
-        local session = _SeedService:GetSession(token)
+        -- and (ranked) fans out to the leaderboard (Plan 3 seam). `session` is guaranteed non-nil
+        -- here: v.accepted implies ValidateRun confirmed the token exists and is owned by userId.
         local finalScore = v.finalScore
         if session.mode == "single" then
             _RankAttemptStore:SetPersonalBestIfHigher(userId, finalScore)
