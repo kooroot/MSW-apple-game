@@ -95,10 +95,10 @@ script GameSession extends Component
         self:StartBoard(_PuzzleCore:DecodeBoard(board), token)
     end
 
-    method void StartMatchSession(string matchId, integer seed, string token)
+    method void StartMatchSession(string matchId, string board, string token)
         -- Initializes a multiplayer session. Called by MatchService (or MatchBridge) when the match
-        -- transitions to RACING and the client's seed + token are delivered. Guards double-init with
-        -- the active flag so a stale re-delivery is a no-op.
+        -- transitions to RACING and the client's streamed board + token are delivered. Guards
+        -- double-init with the active flag so a stale re-delivery is a no-op.
         if self.active then return end
         self.mode = "multi"
         self.matchId = matchId
@@ -107,9 +107,9 @@ script GameSession extends Component
         self.lastLiveReport = 0
         _HudController:SetMode("multi")
         _HudController:SetScore(0)
-        -- Phase S2 TODO: multi still receives the raw seed and generates the board client-side here.
-        -- Convert MatchService to stream the encoded board (like single/ranked) to close SA-2 for multi too.
-        self:StartBoard(_PuzzleCore:GenerateBoard(seed), token)
+        -- SA-2 (Phase S2): decode the server-streamed 170-char board (no seed reaches the client),
+        -- mirroring the single/ranked OnReceiveBoard path. The seed stays server-side for replay.
+        self:StartBoard(_PuzzleCore:DecodeBoard(board), token)
     end
 
     method void OnValidClear(table rect, integer clearedCount)

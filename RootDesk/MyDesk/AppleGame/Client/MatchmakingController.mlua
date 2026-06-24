@@ -91,20 +91,20 @@ script MatchmakingController extends Logic
         end
     end
 
-    method void OnMatchStart(string matchId, integer seed, string token, table rosterNames)
+    method void OnMatchStart(string matchId, string board, string token, table rosterNames)
         -- Called by MatchService @Client bridge when the countdown reaches 0.
         -- Resolves GameSession off the local player's current map and hands off to gameplay.
         -- rosterNames is accepted to match the bridge signature but intentionally unused here:
         -- the roster was already rendered by OnMatchFound; this method only starts the board.
-        log("[MatchmakingController] match start seed=" .. tostring(seed) .. " -> StartMatchSession")
+        log("[MatchmakingController] match start cells=" .. tostring(#board) .. " -> StartMatchSession")
         local player = _UserService.LocalPlayer
         if not isvalid(player) then return end
         local mapEnt = player.CurrentMap
         if not isvalid(mapEnt) then return end
         local session = mapEnt:GetComponent("script.GameSession")
         if not isvalid(session) then return end
-        -- GameSession:StartMatchSession builds the multi board from the shared seed.
-        session:StartMatchSession(matchId, seed, token)
+        -- GameSession:StartMatchSession decodes the server-streamed board (SA-2 Phase S2 — no seed).
+        session:StartMatchSession(matchId, board, token)
         self:Hide()
     end
 

@@ -104,6 +104,12 @@ script MatchService extends Logic
 
         -- Mint the shared seed once for the whole match (distinct salt 0xC3C3C3C3 inside SeedService).
         local sharedSeed = _SeedService:NewMatchSeed(matchId)
+        -- SA-2 (Phase S2): generate the shared board server-side and stream its CONTENTS (170-char
+        -- encoded string) to every member at RACING start, mirroring the single/ranked path. The seed
+        -- itself never leaves the server (kept in match.sharedSeed below + each member's session.seed via
+        -- IssueSharedFor) for replay validation, so no client can precompute the board offline before
+        -- the countdown ends. Generated once here, not per member, since the seed is shared.
+        local board = _PuzzleCore:EncodeBoard(_PuzzleCore:GenerateBoard(sharedSeed))
         log("[Match] formed matchId=" .. matchId .. " roster=" .. tostring(#roster))
         log("[Match] sharedSeed=" .. tostring(sharedSeed))
 
@@ -140,6 +146,7 @@ script MatchService extends Logic
             roster      = roster,
             rosterSet   = rosterSet,
             sharedSeed  = sharedSeed,
+            board       = board,
             state       = "COUNTDOWN",
             scores      = scores,
             finished    = finished,
@@ -197,9 +204,9 @@ script MatchService extends Logic
                 rosterNames[i] = match.names[uid]
             end
 
-            -- Scoped fan-out: each member gets their own token.
+            -- Scoped fan-out: each member gets their own token + the server-streamed board (no seed).
             for _, uid in ipairs(match.roster) do
-                self:OnMatchStart(match.id, match.sharedSeed, match.tokens[uid], rosterNames, uid)
+                self:OnMatchStart(match.id, match.board, match.tokens[uid], rosterNames, uid)
             end
         end
     end
@@ -542,12 +549,14 @@ script MatchService extends Logic
     end
 
     @ExecSpace("Client")
-    method void OnMatchStart(string matchId, integer seed, string token, table rosterNames)
-        -- Server -> one client: match is starting; delivers seed and this player's token.
-        log("[Match] OnMatchStart matchId=" .. tostring(matchId) .. " seed=" .. tostring(seed))
+    method void OnMatchStart(string matchId, string board, string token, table rosterNames)
+        -- Server -> one client: match is starting; streams the encoded 170-char board (SA-2 Phase S2 —
+        -- the seed is NOT sent) plus this player's token. GameSession decodes the board client-side.
+        -- (board is a string; MatchmakingController.OnMatchStart consumes a matching string param.)
+        log("[Match] OnMatchStart matchId=" .. tostring(matchId) .. " cells=" .. tostring(#board))
         -- [Task9/10 bridge] _MatchmakingController does not exist yet (Task 9 creates it).
         if _MatchmakingController ~= nil then
-            _MatchmakingController:OnMatchStart(matchId, seed, token, rosterNames)
+            _MatchmakingController:OnMatchStart(matchId, board, token, rosterNames)
         end
     end
 
