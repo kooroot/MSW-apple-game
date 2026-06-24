@@ -2,13 +2,21 @@
 @ExecSpace("ClientOnly")
 script LeaderboardController extends Logic
 
-    -- Board ids (must match LeaderboardService / RankingConfig): 1=Day 2=Week 3=AllTime,
-    -- plus two client-only virtual tabs 4=Single (personal best) and 5=Multi (Phase 2, locked).
+    -- Board ids. Server real boards (must match LeaderboardService / RankingConfig):
+    --   1=Day 2=Week 3=AllTime 4=MultiRating. The client UI layers two VIRTUAL tab ids on top:
+    --   BOARD_SINGLE (personal-best tab, no server board) and BOARD_MULTI (the multi-rating tab).
     property integer BOARD_DAY = 1
     property integer BOARD_WEEK = 2
     property integer BOARD_ALLTIME = 3
     property integer BOARD_SINGLE = 4
     property integer BOARD_MULTI = 5
+    -- Server board id backing the BOARD_MULTI tab (= LeaderboardService.BOARD_MULTI_RATING = 4).
+    -- Constraint-9: this value (4) deliberately COINCIDES with BOARD_SINGLE's tab id (4). That is
+    -- safe and unambiguous because the SINGLE tab never calls RequestLeaderboard -- it uses
+    -- _ScoreService:RequestPersonalBest (-> OnReceivePersonalBest), a different RPC. So a
+    -- ReceiveLeaderboard reply carrying boardId=4 can ONLY be the multi-rating board, and
+    -- OnReceiveLeaderboard remaps that 4 -> BOARD_MULTI (5) so the currentTab guard passes.
+    property integer BOARD_MULTI_RATING = 4
     property integer PAGE_SIZE = 20
 
     -- UI refs injected by the UIBuilder bind step (placeholder UUIDs until then).
@@ -86,8 +94,10 @@ script LeaderboardController extends Logic
     end
 
     method void ShowRankingPanel()
-        -- Ranking tabs (Day/Week/AllTime): show the row list + my-rank + the snapshot-staleness
-        -- note, hide single/multi panels.
+        -- Ranking tabs (Day/Week/AllTime AND Multi): show the row list + my-rank + the snapshot-
+        -- staleness note, hide the single panel. multiLocked is repurposed as an empty-state label;
+        -- it stays hidden here and is only toggled on by OnReceiveLeaderboard when the multi board
+        -- returns zero rows (see ApplyEmptyState).
         if isvalid(self.listRoot) then self.listRoot.Enable = true end
         if isvalid(self.myRank) then self.myRank.Entity.Enable = true end
         if isvalid(self.staleLabel) then self.staleLabel.Enable = true end
@@ -103,15 +113,6 @@ script LeaderboardController extends Logic
         if isvalid(self.staleLabel) then self.staleLabel.Enable = false end
         if isvalid(self.singlePB) then self.singlePB.Entity.Enable = true end
         if isvalid(self.multiLocked) then self.multiLocked.Enable = false end
-    end
-
-    method void ShowMultiPanel()
-        -- Multi tab (Phase 2): show only the locked placeholder; hide the stale note too.
-        if isvalid(self.listRoot) then self.listRoot.Enable = false end
-        if isvalid(self.myRank) then self.myRank.Entity.Enable = false end
-        if isvalid(self.staleLabel) then self.staleLabel.Enable = false end
-        if isvalid(self.singlePB) then self.singlePB.Entity.Enable = false end
-        if isvalid(self.multiLocked) then self.multiLocked.Enable = true end
     end
 
     method void PaintTab(ButtonComponent tab, boolean active)
@@ -150,7 +151,11 @@ script LeaderboardController extends Logic
             self:ShowSinglePanel()
             if _ScoreService ~= nil then _ScoreService:RequestPersonalBest() end
         elseif boardId == self.BOARD_MULTI then
-            self:ShowMultiPanel()
+            -- Multi tab now shows the LIVE ELO rating board (server board 4) via the same row list
+            -- as Day/Week/AllTime. currentTab stays BOARD_MULTI (5); the server replies with its
+            -- own boardId=4, which OnReceiveLeaderboard remaps back to 5 so the guard passes.
+            self:ShowRankingPanel()
+            if _LeaderboardService ~= nil then _LeaderboardService:RequestLeaderboard(self.BOARD_MULTI_RATING, 1) end
         end
     end
 
@@ -173,6 +178,10 @@ script LeaderboardController extends Logic
     method void OnReceiveLeaderboard(integer boardId, table entries, integer myRank, integer myScore, boolean stale)
         -- Bridged from _LeaderboardService:ReceiveLeaderboard (Task 9). Rebuilds the row list by
         -- cloning the hidden RowTemplate per entry. Drops replies for a tab the user already left.
+        -- Constraint-9: the server's multi board id (BOARD_MULTI_RATING=4) maps to the client's
+        -- virtual BOARD_MULTI (5) tab. Remap BEFORE the currentTab guard so the reply is accepted
+        -- (the guard compares against currentTab, which is 5 while the Multi tab is open).
+        if boardId == self.BOARD_MULTI_RATING then boardId = self.BOARD_MULTI end
         if boardId ~= self.currentTab then return end
         self:ClearRows()
         if not isvalid(self.rowTemplate) then return end
@@ -195,6 +204,12 @@ script LeaderboardController extends Logic
             else
                 self.myRank.Text = "내 순위 - (기록 없음)"
             end
+        end
+        -- Empty-state: on the Multi tab only, show the repurposed multiLocked label when the live
+        -- rating board has no rows yet (a fresh board before any match settles). The other ranking
+        -- tabs leave it hidden (ShowRankingPanel already disabled it on tab switch).
+        if isvalid(self.multiLocked) then
+            self.multiLocked.Enable = (boardId == self.BOARD_MULTI and #self.rows == 0)
         end
         -- Log the count actually rendered (#self.rows), not #entries: a mid-loop Clone failure would
         -- make them differ, and the verify step checks rendered rows.

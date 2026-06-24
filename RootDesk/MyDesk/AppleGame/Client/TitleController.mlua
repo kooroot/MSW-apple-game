@@ -7,10 +7,12 @@ script TitleController extends Logic
     property Entity dimmer = "2a552ba0-bb35-427f-92d3-ff91db509d1c"
     property ButtonComponent btnSingle = "bac777d1-8c5c-46a2-a230-3b858c93ae72"
     property ButtonComponent btnRanked = "162d8a5a-68a3-43d3-8b12-3a9cf378a991"
+    property ButtonComponent btnMulti = "d56bb108-87e6-4ab9-a89d-d01c09521758"
 
     -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
     property any singleHandler = nil
     property any rankedHandler = nil
+    property any multiHandler = nil
 
     method void OnBeginPlay()
         -- Shows the title at start (it is the entry screen) and wires the two mode buttons. A @Logic
@@ -25,6 +27,9 @@ script TitleController extends Logic
         end
         if isvalid(self.btnRanked) then
             self.rankedHandler = self.btnRanked.Entity:ConnectEvent(ButtonClickEvent, self.OnRanked)
+        end
+        if isvalid(self.btnMulti) then
+            self.multiHandler = self.btnMulti.Entity:ConnectEvent(ButtonClickEvent, self.OnMulti)
         end
         log("[TitleController] ready")
     end
@@ -71,6 +76,18 @@ script TitleController extends Logic
         self:StartMode("ranked")
     end
 
+    method void OnMulti()
+        -- Multiplayer button: hands off to private-grouped matchmaking instead of starting a
+        -- GameSession directly (single/ranked go through StartMode -> GameSession:StartSession).
+        -- _MatchmakingController (a @Logic global) owns the queue -> match-found -> countdown ->
+        -- session-start flow, so here we only play the click SFX, hide the title, and open it.
+        -- _AssetCatalog / _MatchmakingController are @Logic globals -> guard with ~= nil (an off-
+        -- client / pre-init call is then a safe no-op, matching StartMode's guarding style).
+        if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
+        self:Hide()
+        if _MatchmakingController ~= nil then _MatchmakingController:Show() end
+    end
+
     method void OnEndPlay()
         -- Disconnects button handlers (mirror of OnBeginPlay).
         if self.singleHandler ~= nil and isvalid(self.btnSingle) then
@@ -79,8 +96,12 @@ script TitleController extends Logic
         if self.rankedHandler ~= nil and isvalid(self.btnRanked) then
             self.btnRanked.Entity:DisconnectEvent(ButtonClickEvent, self.rankedHandler)
         end
+        if self.multiHandler ~= nil and isvalid(self.btnMulti) then
+            self.btnMulti.Entity:DisconnectEvent(ButtonClickEvent, self.multiHandler)
+        end
         self.singleHandler = nil
         self.rankedHandler = nil
+        self.multiHandler = nil
     end
 
 end
