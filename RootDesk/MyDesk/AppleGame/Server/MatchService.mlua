@@ -22,6 +22,10 @@ script MatchService extends Logic
         self._T.queue        = {}
         self._T.matches      = {}
         self._T.userToMatch  = {}
+        -- Friend-room registry (room-code lobby). Parallel to the queue/match registry above; rooms
+        -- bypass the matchmaking queue entirely and funnel straight into FormMatch on StartRoom.
+        self._T.rooms        = {}   -- code(string) -> { code, hostId, members[], memberSet, started }
+        self._T.userToRoom   = {}   -- userId -> room code
         self._T.nextMatchSeq = 0
         -- 1 Hz tick clock used to age queue entries for QUEUE_TIMEOUT bookkeeping.
         self._T.tickCount    = 0
@@ -183,8 +187,18 @@ script MatchService extends Logic
             venueHandle = handle,
         }
         self._T.matches[matchId] = match
+        -- userToMatch becomes the single owner of a matched user. Detach any stale queue/room
+        -- membership for every roster member HERE — the one place that runs no matter which path
+        -- formed the match (random Tick or friend-room StartRoom). The random path already dequeues
+        -- in Tick before FormMatch, and StartRoom clears userToRoom before handing the room over, so
+        -- both are no-ops on the happy path; this is the catch-all that prevents a settled match from
+        -- leaving userToRoom dangling (permanent "busy" wedge) or a leftover queue entry from being
+        -- drained into a SECOND match. RemoveFromRoom safely no-ops when the user holds no room, and
+        -- if a crafted client held a room with a third member, it dissolves/shrinks + notifies them.
         for _, uid in ipairs(roster) do
             self._T.userToMatch[uid] = matchId
+            self._T.queue[uid] = nil
+            self:RemoveFromRoom(uid)
         end
 
         -- Build rosterNames array parallel to roster for RPC fan-out.
@@ -444,6 +458,15 @@ script MatchService extends Logic
             log("[Match] EnqueueMatch ignored — already queued userId=" .. senderUserId)
             return
         end
+        -- Mutually exclusive with the friend-room subsystem: a user who owns/joined a room must not
+        -- also sit in the random queue. Without this, a settled match (which clears only userToMatch)
+        -- would leave userToRoom dangling -> a permanent "busy" wedge, and a leftover room could be
+        -- joined by a friend who can never be started. Symmetric to the queue guard in CreateRoom/
+        -- JoinRoom; the room subsystem already rejects an enqueued user, so this closes the other way.
+        if self._T.userToRoom[senderUserId] ~= nil then
+            log("[Match] EnqueueMatch ignored — in a friend room userId=" .. senderUserId)
+            return
+        end
         -- Stamp the enqueue tick so the Tick sweep can age this entry against QUEUE_TIMEOUT.
         self._T.queue[senderUserId] = self._T.tickCount
         log("[Match] queued userId=" .. senderUserId .. " tick=" .. tostring(self._T.tickCount))
@@ -533,6 +556,8 @@ script MatchService extends Logic
         local uid = ev.UserId
         -- Remove from matchmaking queue (idempotent).
         self._T.queue[uid] = nil
+        -- Dissolve/shrink any friend-room the user was in (mirrors explicit LeaveRoom).
+        self:RemoveFromRoom(uid)
         -- If the user is in an active match, mark them as finished with score 0 (forfeit).
         if self._T.userToMatch[uid] ~= nil then
             local match = self._T.matches[self._T.userToMatch[uid]]
@@ -547,6 +572,194 @@ script MatchService extends Logic
                 -- path and avoids mid-iteration mutation of _T.matches.
             end
         end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- FRIEND ROOM (room-code lobby)
+    --
+    -- A host creates a room (4-digit code); a friend joins by entering the same code (shared
+    -- out-of-band — KakaoTalk/Discord/voice). When the host starts, the room's member array is handed
+    -- to FormMatch — the SAME formation/seed/board/token/countdown pipeline the random queue uses — so
+    -- a friend match is identical to a random match downstream (no instance map, no separate FSM).
+    -- Rooms are capped at MATCH_SIZE (a friend match is the same 1v1 as a random match) and never
+    -- touch the queue.
+    -- -------------------------------------------------------------------------
+
+    method string GenerateRoomCode()
+        -- Returns a unique 4-digit numeric room code (1000-9999), retrying on collision. The registry
+        -- holds at most a handful of live rooms, so a collision is rare; the bounded retry plus a final
+        -- linear scan guarantee termination even in a (practically impossible) near-full space.
+        local attempts = 0
+        while attempts < 50 do
+            local code = tostring(_UtilLogic:RandomIntegerRange(1000, 9999))
+            if self._T.rooms[code] == nil then
+                return code
+            end
+            attempts = attempts + 1
+        end
+        for n = 1000, 9999 do
+            local code = tostring(n)
+            if self._T.rooms[code] == nil then
+                return code
+            end
+        end
+        return ""
+    end
+
+    method table RoomRosterNames(table room)
+        -- Builds the parallel display-name array for a room's members (mirrors FormMatch naming:
+        -- Nickname when available, userId fallback for synthetic/offline players).
+        local names = {}
+        for i, uid in ipairs(room.members) do
+            local nm = uid
+            local ent = _UserService.UserEntities[uid]
+            if ent ~= nil and ent.PlayerComponent ~= nil then
+                nm = ent.PlayerComponent.Nickname
+            end
+            names[i] = nm
+        end
+        return names
+    end
+
+    method void RemoveFromRoom(string uid)
+        -- Removes uid from whatever room they're in. Host leaving dissolves the room (each remaining
+        -- member is freed and notified via OnRoomClosed); a guest leaving shrinks it and refreshes the
+        -- remaining roster via OnRoomUpdated. Shared by LeaveRoom (explicit 나가기) and OnUserLeave
+        -- (disconnect). Server-side state; both callers run on the server.
+        local code = self._T.userToRoom[uid]
+        if code == nil then return end
+        self._T.userToRoom[uid] = nil
+        local room = self._T.rooms[code]
+        if room == nil then return end
+        if uid == room.hostId then
+            for _, other in ipairs(room.members) do
+                if other ~= uid then
+                    self._T.userToRoom[other] = nil
+                    self:OnRoomClosed("host_left", other)
+                end
+            end
+            self._T.rooms[code] = nil
+            log("[Room] dissolved (host left) code=" .. code)
+        else
+            local newMembers = {}
+            for _, other in ipairs(room.members) do
+                if other ~= uid then table.insert(newMembers, other) end
+            end
+            room.members = newMembers
+            room.memberSet[uid] = nil
+            local rosterNames = self:RoomRosterNames(room)
+            for _, other in ipairs(room.members) do
+                self:OnRoomUpdated(code, rosterNames, other)
+            end
+            log("[Room] member left code=" .. code .. " uid=" .. uid)
+        end
+    end
+
+    @ExecSpace("Server")
+    method void CreateRoom()
+        -- Client -> server: senderUserId creates a new room and becomes its host.
+        local host = senderUserId
+        -- Reject if already busy (in a room, an active match, OR the random queue) so the three
+        -- membership subsystems stay mutually exclusive — else a match settled while this room is
+        -- live would leave the room dangling and wedge the user as "busy" for the rest of the session.
+        if self._T.userToRoom[host] ~= nil or self._T.userToMatch[host] ~= nil or self._T.queue[host] ~= nil then
+            log("[Room] CreateRoom rejected — busy userId=" .. host)
+            self:OnRoomError("busy", host)
+            return
+        end
+        local code = self:GenerateRoomCode()
+        if code == "" then
+            self:OnRoomError("no_code", host)
+            return
+        end
+        local room = {
+            code      = code,
+            hostId    = host,
+            members   = { host },
+            memberSet = { [host] = true },
+            started   = false,
+        }
+        self._T.rooms[code] = room
+        self._T.userToRoom[host] = code
+        log("[Room] created code=" .. code .. " host=" .. host)
+        -- Transition the host's client into the in-room view (amHost=true).
+        self:OnRoomJoined(code, self:RoomRosterNames(room), true, host)
+    end
+
+    @ExecSpace("Server")
+    method void JoinRoom(string code)
+        -- Client -> server: senderUserId joins an existing room by code.
+        local joiner = senderUserId
+        -- Same three-way busy guard as CreateRoom (room / active match / random queue mutually exclusive).
+        if self._T.userToRoom[joiner] ~= nil or self._T.userToMatch[joiner] ~= nil or self._T.queue[joiner] ~= nil then
+            log("[Room] JoinRoom rejected — busy userId=" .. joiner)
+            self:OnRoomError("busy", joiner)
+            return
+        end
+        local room = self._T.rooms[code]
+        if room == nil then
+            log("[Room] JoinRoom not found code=" .. tostring(code) .. " userId=" .. joiner)
+            self:OnRoomError("not_found", joiner)
+            return
+        end
+        if room.started then
+            self:OnRoomError("started", joiner)
+            return
+        end
+        if #room.members >= self.MATCH_SIZE then
+            self:OnRoomError("full", joiner)
+            return
+        end
+        table.insert(room.members, joiner)
+        room.memberSet[joiner] = true
+        self._T.userToRoom[joiner] = code
+        log("[Room] joined code=" .. code .. " userId=" .. joiner .. " size=" .. tostring(#room.members))
+        local rosterNames = self:RoomRosterNames(room)
+        -- Joiner -> in-room view; then refresh every member's roster (host's start button re-evaluates).
+        self:OnRoomJoined(code, rosterNames, false, joiner)
+        for _, uid in ipairs(room.members) do
+            self:OnRoomUpdated(code, rosterNames, uid)
+        end
+    end
+
+    @ExecSpace("Server")
+    method void LeaveRoom()
+        -- Client -> server: senderUserId leaves their room (explicit 나가기).
+        self:RemoveFromRoom(senderUserId)
+    end
+
+    @ExecSpace("Server")
+    method void StartRoom()
+        -- Client -> server: the host starts the match. Validates host + roster size, unregisters the
+        -- room, then hands the member array to FormMatch (shared with the random-queue path).
+        local host = senderUserId
+        local code = self._T.userToRoom[host]
+        if code == nil then return end
+        local room = self._T.rooms[code]
+        if room == nil then return end
+        if host ~= room.hostId then
+            log("[Room] StartRoom rejected — not host userId=" .. host)
+            self:OnRoomError("not_host", host)
+            return
+        end
+        if room.started then return end
+        if #room.members < 2 then
+            log("[Room] StartRoom rejected — need >=2 code=" .. code)
+            self:OnRoomError("need_more", host)
+            return
+        end
+        room.started = true
+        -- Snapshot members and unregister the room BEFORE FormMatch so userToMatch (set by FormMatch)
+        -- becomes the only live mapping and no stale room state lingers. FormMatch fans OnMatchFound;
+        -- each client's MatchmakingController.OnMatchFound hides the RoomController and takes over.
+        local members = {}
+        for _, uid in ipairs(room.members) do
+            table.insert(members, uid)
+            self._T.userToRoom[uid] = nil
+        end
+        self._T.rooms[code] = nil
+        log("[Room] start code=" .. code .. " members=" .. tostring(#members))
+        self:FormMatch(members)
     end
 
     -- -------------------------------------------------------------------------
@@ -613,6 +826,46 @@ script MatchService extends Logic
         -- [Task11 bridge] _MatchResultController does not exist yet (Task 11 creates it).
         if _MatchResultController ~= nil then
             _MatchResultController:ShowResult(outcomeForMe, winnerName, myRatingDelta, myNewRating, names, scores)
+        end
+    end
+
+    -- -------------------------------------------------------------------------
+    -- OUTBOUND @Client RPCs — FRIEND ROOM (scoped — targetUserId appended as last call-site arg)
+    -- -------------------------------------------------------------------------
+
+    @ExecSpace("Client")
+    method void OnRoomJoined(string code, table rosterNames, boolean amHost)
+        -- Server -> one client: this player created or joined a room; transition into the in-room view.
+        log("[Room] OnRoomJoined code=" .. tostring(code) .. " amHost=" .. tostring(amHost))
+        if _RoomController ~= nil then
+            _RoomController:OnRoomJoined(code, rosterNames, amHost)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnRoomUpdated(string code, table rosterNames)
+        -- Server -> one client: the room roster changed; refresh the roster + start-button state.
+        log("[Room] OnRoomUpdated code=" .. tostring(code) .. " size=" .. tostring(#rosterNames))
+        if _RoomController ~= nil then
+            _RoomController:OnRoomUpdated(code, rosterNames)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnRoomClosed(string reason)
+        -- Server -> one client: the room dissolved (host left / disconnect) without starting.
+        log("[Room] OnRoomClosed reason=" .. tostring(reason))
+        if _RoomController ~= nil then
+            _RoomController:OnRoomClosed(reason)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnRoomError(string reason)
+        -- Server -> one client: a create/join/start request failed; show the reason in the room UI.
+        log("[Room] OnRoomError reason=" .. tostring(reason))
+        if _RoomController ~= nil then
+            _RoomController:OnRoomError(reason)
         end
     end
 

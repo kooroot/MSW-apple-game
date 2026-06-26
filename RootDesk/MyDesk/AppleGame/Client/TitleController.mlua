@@ -86,15 +86,14 @@ script TitleController extends Logic
     end
 
     method void OnMulti()
-        -- Multiplayer button: hands off to private-grouped matchmaking instead of starting a
-        -- GameSession directly (single/ranked go through StartMode -> GameSession:StartSession).
-        -- _MatchmakingController (a @Logic global) owns the queue -> match-found -> countdown ->
-        -- session-start flow, so here we only play the click SFX, hide the title, and open it.
-        -- _AssetCatalog / _MatchmakingController are @Logic globals -> guard with ~= nil (an off-
-        -- client / pre-init call is then a safe no-op, matching StartMode's guarding style).
+        -- 멀티플레이 button: opens the multiplayer menu (RoomController) — depth-based navigation into
+        -- 랜덤 매치 (random queue) or 방 코드 (create/join). RoomController, not the title, decides which
+        -- sub-flow to hand off to (its 랜덤 매치 button opens _MatchmakingController). Single/ranked go
+        -- through StartMode -> GameSession:StartSession instead. _AssetCatalog / _RoomController are
+        -- @Logic globals -> guard with ~= nil (an off-client / pre-init call is a safe no-op).
         if _AssetCatalog ~= nil then _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0) end
         self:Hide()
-        if _MatchmakingController ~= nil then _MatchmakingController:Show() end
+        if _RoomController ~= nil then _RoomController:Show() end
     end
 
     method void OnRank()

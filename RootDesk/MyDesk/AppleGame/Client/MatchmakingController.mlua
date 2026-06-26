@@ -95,6 +95,13 @@ script MatchmakingController extends Logic
         -- Switches the panel from searching state to match-found/roster view.
         -- rosterNames is a flat array of display-name strings (parallel to match.roster).
         log("[MatchmakingController] match found slot=" .. tostring(mySlot))
+        -- Handoff: a match can form via EITHER path — the random queue OR a friend room. A friend-room
+        -- player reached here with the RoomController screen up and THIS panel never Show()n, so close
+        -- the room screen and enable our own panel/dimmer. For a random-queue player the panel is
+        -- already enabled (Show() ran) and _RoomController is nil/hidden, so both ops are idempotent.
+        if _RoomController ~= nil then _RoomController:Hide() end
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
         -- A match arrived: cancel any pending not-found dismissal so a stale timer from a previous
         -- (timed-out) attempt cannot yank this matched player back to the title mid-countdown.
         self:CancelTimeoutDismiss()

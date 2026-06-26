@@ -1,0 +1,415 @@
+@Logic
+@ExecSpace("ClientOnly")
+script RoomController extends Logic
+
+    -- Multiplayer menu + room-code lobby hub. Depth-based navigation (4 sub-views on one .ui):
+    --   멀티플레이(menu) → 랜덤 매치 (hand off to MatchmakingController) | 방 코드(codeMenu)
+    --   방 코드(codeMenu) → 생성 (CreateRoom) | 참가 → 방 코드 입력(join) → 입장 (JoinRoom)
+    --   방 안(room) → 시작 (StartRoom, host) | 나가기 (LeaveRoom)
+    -- TitleController.OnMulti opens this in the menu view. Random match and the room flow both end up
+    -- in MatchService.FormMatch downstream (same seed/board/token/countdown), so this owns only the UI.
+
+    -- UI entity / component refs. Injected by the UIBuilder bind step (placeholder UUIDs until then).
+    -- Screen container.
+    property Entity panel         = "f49c847b-f309-46dc-a83a-9d732ec30d4d"
+    property Entity dimmer        = "e0c0b840-b25f-43f8-8981-246f46a39476"
+    -- Four mutually-exclusive sub-views, toggled via Entity.Enable (same idiom as MatchFoundOverlay).
+    property Entity menuGroup     = "40f30d58-f5fa-4b0e-988c-398085d23053"
+    property Entity codeMenuGroup = "25e7acac-f4a2-4ecb-9232-b1ad72634906"
+    property Entity joinGroup     = "485c623e-cbc3-4b54-b6a9-1ae145974890"
+    property Entity roomGroup     = "ce437068-da7f-4ac7-9227-4a3f902cf66b"
+    -- Shared title (text swapped per view).
+    property TextComponent title  = "294f4a8f-06e1-40c3-85b8-3ec7c0b0130a"
+    -- Menu view (멀티플레이).
+    property ButtonComponent btnRandom      = "aee5596b-6c4b-40a7-8b29-339918e1ff04"
+    property ButtonComponent btnCode        = "c421de88-9345-437a-89bb-de27615e6c61"
+    property ButtonComponent btnMenuBack    = "0955691e-2c4b-4874-a9c9-a318c9253997"
+    -- Code-menu view (방 코드).
+    property ButtonComponent btnCreate      = "e26bc86e-d618-432e-bd77-bdad8afe4674"
+    property ButtonComponent btnJoinMenu    = "ecbadd81-cf30-4156-8c10-022b2989774f"
+    property ButtonComponent btnCodeBack    = "4eb40724-3be3-44a8-8b99-900ac850a1a7"
+    property TextComponent codeStatus       = "072881c0-151b-4674-8885-9636265e7ea7"
+    -- Join view (방 코드 입력).
+    property TextInputComponent codeInput   = "8de7f0ee-74b7-4789-8932-046c31582df8"
+    property ButtonComponent btnJoinConfirm = "37718488-90d9-4bc4-b1fb-23087685d44d"
+    property ButtonComponent btnJoinBack    = "ca20fd77-7b3b-4103-a54f-4c1f51e0335c"
+    property TextComponent joinStatus       = "5d1c538e-a50e-49e7-9bce-74af07bfeb2a"
+    -- Room view (방 안).
+    property TextComponent codeLabel        = "d55e6a07-253d-4d00-b29e-c7a8d4a77075"
+    property TextComponent rosterText       = "1b8a3012-5c01-4b74-9fd6-d528357c5e41"
+    property TextComponent waitLabel        = "30baa940-5ada-4ec2-8f38-4b31b1216407"
+    property ButtonComponent btnStart       = "f0cee5f3-9343-456b-9e2c-4c7fcfee2642"
+    property ButtonComponent btnLeave       = "a0c733d2-b48a-4aff-ae39-dee073d84904"
+
+    -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
+    property any randomHandler      = nil
+    property any codeHandler        = nil
+    property any menuBackHandler    = nil
+    property any createHandler      = nil
+    property any joinMenuHandler    = nil
+    property any codeBackHandler    = nil
+    property any joinConfirmHandler = nil
+    property any joinBackHandler    = nil
+    property any startHandler       = nil
+    property any leaveHandler       = nil
+
+    -- Client-side state.
+    --  active   : the whole screen is shown (set false by Hide()); gates late server bridges.
+    --  wantRoom : the player has an outstanding create/join intent OR is in a room. Cleared on any
+    --             back-out / leave so a late OnRoomJoined from an abandoned attempt cannot resurrect
+    --             the room view over a screen the player already returned to (race fix).
+    --  amHost   : gates the start button. currentCode / currentView are retained for display + routing.
+    property boolean active      = false
+    property boolean wantRoom    = false
+    property boolean amHost      = false
+    property string currentCode  = ""
+    property string currentView  = "menu"
+
+    method void OnBeginPlay()
+        -- @Logic OnBeginPlay runs on BOTH server and client; on the server every UI ref is nil, so each
+        -- deref is isvalid-guarded (same hazard as MatchmakingController/TitleController). This screen
+        -- starts hidden — the title is the entry screen — so Hide() defensively rather than authoring
+        -- the .ui root group hidden (the root must keep default_show=true so this OnBeginPlay runs).
+        self:Hide()
+        if isvalid(self.btnRandom) then
+            self.randomHandler = self.btnRandom.Entity:ConnectEvent(ButtonClickEvent, self.OnRandom)
+        end
+        if isvalid(self.btnCode) then
+            self.codeHandler = self.btnCode.Entity:ConnectEvent(ButtonClickEvent, self.OnCode)
+        end
+        if isvalid(self.btnMenuBack) then
+            self.menuBackHandler = self.btnMenuBack.Entity:ConnectEvent(ButtonClickEvent, self.OnMenuBack)
+        end
+        if isvalid(self.btnCreate) then
+            self.createHandler = self.btnCreate.Entity:ConnectEvent(ButtonClickEvent, self.OnCreate)
+        end
+        if isvalid(self.btnJoinMenu) then
+            self.joinMenuHandler = self.btnJoinMenu.Entity:ConnectEvent(ButtonClickEvent, self.OnJoinMenu)
+        end
+        if isvalid(self.btnCodeBack) then
+            self.codeBackHandler = self.btnCodeBack.Entity:ConnectEvent(ButtonClickEvent, self.OnCodeBack)
+        end
+        if isvalid(self.btnJoinConfirm) then
+            self.joinConfirmHandler = self.btnJoinConfirm.Entity:ConnectEvent(ButtonClickEvent, self.OnJoinConfirm)
+        end
+        if isvalid(self.btnJoinBack) then
+            self.joinBackHandler = self.btnJoinBack.Entity:ConnectEvent(ButtonClickEvent, self.OnJoinBack)
+        end
+        if isvalid(self.btnStart) then
+            self.startHandler = self.btnStart.Entity:ConnectEvent(ButtonClickEvent, self.OnStart)
+        end
+        if isvalid(self.btnLeave) then
+            self.leaveHandler = self.btnLeave.Entity:ConnectEvent(ButtonClickEvent, self.OnLeave)
+        end
+        log("[RoomController] ready")
+    end
+
+    method void PlayClick()
+        -- Shared UI click SFX (mirrors TitleController). _AssetCatalog is nil on the server.
+        if _AssetCatalog ~= nil then
+            _SoundService:PlaySound(_AssetCatalog:SfxClick(), 1.0)
+        end
+    end
+
+    method void Show()
+        -- Opens the multiplayer menu (depth 0). Called by TitleController.OnMulti.
+        self.active = true
+        self.wantRoom = false
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        self:ShowMenu()
+    end
+
+    method void Hide()
+        -- Hides the entire screen. Safe no-op on the server (refs are nil). Clears `active` so a late
+        -- server bridge (OnRoomJoined/OnRoomUpdated) arriving after the screen closed is ignored.
+        self.active = false
+        if isvalid(self.panel) then self.panel.Enable = false end
+        if isvalid(self.dimmer) then self.dimmer.Enable = false end
+    end
+
+    method void HideAllViews()
+        -- Disables all four sub-view groups (callers then enable exactly one).
+        if isvalid(self.menuGroup) then self.menuGroup.Enable = false end
+        if isvalid(self.codeMenuGroup) then self.codeMenuGroup.Enable = false end
+        if isvalid(self.joinGroup) then self.joinGroup.Enable = false end
+        if isvalid(self.roomGroup) then self.roomGroup.Enable = false end
+    end
+
+    method void ShowMenu()
+        -- Depth 0 — 멀티플레이: pick 랜덤 매치 or 방 코드.
+        self.currentView = "menu"
+        self:HideAllViews()
+        if isvalid(self.menuGroup) then self.menuGroup.Enable = true end
+        if isvalid(self.title) then self.title.Text = "멀티플레이" end
+    end
+
+    method void ShowCodeMenu()
+        -- Depth 1 — 방 코드: pick 생성 or 참가.
+        self.currentView = "codeMenu"
+        self:HideAllViews()
+        if isvalid(self.codeMenuGroup) then self.codeMenuGroup.Enable = true end
+        if isvalid(self.title) then self.title.Text = "방 코드" end
+        if isvalid(self.codeStatus) then self.codeStatus.Text = "" end
+    end
+
+    method void ShowJoin()
+        -- Depth 2 — 방 코드 입력: type a friend's code, then 입장.
+        self.currentView = "join"
+        self:HideAllViews()
+        if isvalid(self.joinGroup) then self.joinGroup.Enable = true end
+        if isvalid(self.title) then self.title.Text = "방 코드 입력" end
+        if isvalid(self.codeInput) then self.codeInput.Text = "" end
+        if isvalid(self.joinStatus) then self.joinStatus.Text = "" end
+    end
+
+    method void ShowRoom()
+        -- In a room: code + roster + start/leave.
+        self.currentView = "room"
+        self:HideAllViews()
+        if isvalid(self.roomGroup) then self.roomGroup.Enable = true end
+        if isvalid(self.title) then self.title.Text = "방" end
+    end
+
+    method void AbandonPending()
+        -- Backing out of a create/join attempt: if a CreateRoom/JoinRoom RPC was already dispatched but
+        -- the server's OnRoomJoined hasn't arrived, dissolve any room the server may have just created
+        -- (LeaveRoom is a safe no-op when the user holds no room). Clearing wantRoom also makes a late
+        -- OnRoomJoined bail (see OnRoomJoined), so an abandoned attempt can't resurrect the room view.
+        if self.wantRoom then
+            self.wantRoom = false
+            _MatchService:LeaveRoom()
+        end
+    end
+
+    method void RenderRoster(table rosterNames)
+        -- Renders the roster list and updates the wait label + start button per role and member count.
+        local n = #rosterNames
+        if isvalid(self.rosterText) then
+            local lines = {}
+            for i = 1, n do
+                table.insert(lines, tostring(i) .. ". " .. tostring(rosterNames[i]))
+            end
+            self.rosterText.Text = table.concat(lines, "\n")
+        end
+        -- Start button is host-only and only enabled (shown) once the room is full enough to start.
+        -- MSW has no ButtonComponent.Interactable, so "disabled" = the button entity is hidden; it
+        -- appears once a friend joins. StartRoom re-validates host + size server-side regardless.
+        local canStart = self.amHost and n >= 2
+        if isvalid(self.btnStart) then self.btnStart.Entity.Enable = canStart end
+        if isvalid(self.waitLabel) then
+            if n < 2 then
+                self.waitLabel.Text = "친구의 입장을 기다리는 중...  (코드를 공유하세요)"
+            elseif self.amHost then
+                self.waitLabel.Text = "시작 버튼을 누르면 대결이 시작됩니다"
+            else
+                self.waitLabel.Text = "방장이 시작하기를 기다리는 중..."
+            end
+        end
+    end
+
+    method void OnRandom()
+        -- 랜덤 매치: hand off to the existing random-queue matchmaking screen.
+        self:PlayClick()
+        self:Hide()
+        if _MatchmakingController ~= nil then _MatchmakingController:Show() end
+    end
+
+    method void OnCode()
+        -- 방 코드: drill into the room-code submenu (생성 / 참가).
+        self:PlayClick()
+        self:ShowCodeMenu()
+    end
+
+    method void OnMenuBack()
+        -- 뒤로 (멀티플레이 메뉴 → 타이틀).
+        self:PlayClick()
+        self:Hide()
+        if _TitleController ~= nil then _TitleController:Show() end
+    end
+
+    method void OnCreate()
+        -- 방 만들기: ask the server to create a room. The server replies via OnRoomJoined (amHost=true).
+        self:PlayClick()
+        self.wantRoom = true
+        if isvalid(self.codeStatus) then self.codeStatus.Text = "방 만드는 중..." end
+        _MatchService:CreateRoom()
+    end
+
+    method void OnJoinMenu()
+        -- 참가: go to the code-input screen (depth 2).
+        self:PlayClick()
+        self:ShowJoin()
+    end
+
+    method void OnCodeBack()
+        -- 뒤로 (방 코드 메뉴 → 멀티플레이 메뉴). Dissolve any in-flight create first.
+        self:PlayClick()
+        self:AbandonPending()
+        self:ShowMenu()
+    end
+
+    method void OnJoinConfirm()
+        -- 입장: read the typed code and ask the server to join. Server replies OnRoomJoined or OnRoomError.
+        self:PlayClick()
+        local code = ""
+        if isvalid(self.codeInput) then code = self.codeInput.Text end
+        -- Strip whitespace and reject an empty field locally before spending an RPC. gsub returns
+        -- (result, count); capture both into 2 locals so neither the LSP nor the codeblock builder
+        -- flags a 2-values-into-1-variable assignment (parenthesizing satisfies the LSP but NOT the
+        -- codeblock generator — the build-log checker still warns on the parenthesized form).
+        local stripped, _ = string.gsub(code, "%s", "")
+        code = stripped
+        if code == "" then
+            if isvalid(self.joinStatus) then self.joinStatus.Text = "코드를 입력해 주세요" end
+            return
+        end
+        self.wantRoom = true
+        if isvalid(self.joinStatus) then self.joinStatus.Text = "입장 중..." end
+        _MatchService:JoinRoom(code)
+    end
+
+    method void OnJoinBack()
+        -- 뒤로 (방 코드 입력 → 방 코드 메뉴). Dissolve any in-flight join first.
+        self:PlayClick()
+        self:AbandonPending()
+        self:ShowCodeMenu()
+    end
+
+    method void OnStart()
+        -- 시작 (host only): ask the server to start. The button is only enabled when the room has >=2
+        -- members; StartRoom re-validates host + size server-side.
+        self:PlayClick()
+        _MatchService:StartRoom()
+    end
+
+    method void OnLeave()
+        -- 나가기 (방 안 → 타이틀). Optimistic client transition (mirrors MatchmakingController.OnCancel);
+        -- the server's RemoveFromRoom dissolves/shrinks the room and notifies the other member.
+        self:PlayClick()
+        self.wantRoom = false
+        _MatchService:LeaveRoom()
+        self:Hide()
+        if _TitleController ~= nil then _TitleController:Show() end
+    end
+
+    method void OnRoomJoined(string code, table rosterNames, boolean amHost)
+        -- Server bridge: this client created/joined a room. Race guard: if the player backed out of the
+        -- create/join (wantRoom cleared) or closed the screen (active=false) before this reply arrived,
+        -- do NOT resurrect the room view — instead dissolve the now-orphaned room server-side so it
+        -- can't linger / wedge the user as "busy".
+        log("[RoomController] joined code=" .. tostring(code) .. " amHost=" .. tostring(amHost))
+        if not self.active or not self.wantRoom then
+            _MatchService:LeaveRoom()
+            return
+        end
+        self.currentCode = code
+        self.amHost = amHost
+        if isvalid(self.panel) then self.panel.Enable = true end
+        if isvalid(self.dimmer) then self.dimmer.Enable = true end
+        self:ShowRoom()
+        if isvalid(self.codeLabel) then self.codeLabel.Text = "방 코드  " .. tostring(code) end
+        self:RenderRoster(rosterNames)
+    end
+
+    method void OnRoomUpdated(string code, table rosterNames)
+        -- Server bridge: roster changed (someone joined/left). Only meaningful while the screen is up.
+        log("[RoomController] updated code=" .. tostring(code) .. " size=" .. tostring(#rosterNames))
+        if not self.active then return end
+        self.currentCode = code
+        self:RenderRoster(rosterNames)
+    end
+
+    method void OnRoomClosed(string reason)
+        -- Server bridge: the room dissolved without starting (host left / disconnect). Drop back to the
+        -- room-code menu with a notice so the player can create or join another room.
+        log("[RoomController] closed reason=" .. tostring(reason))
+        self.currentCode = ""
+        self.amHost = false
+        self.wantRoom = false
+        if not self.active then return end
+        self:ShowCodeMenu()
+        if isvalid(self.codeStatus) then
+            if reason == "host_left" then
+                self.codeStatus.Text = "방장이 나가서 방이 닫혔어요"
+            else
+                self.codeStatus.Text = "방이 닫혔어요"
+            end
+        end
+    end
+
+    method string ErrorMessage(string reason)
+        -- Maps a server error reason code to a Korean user-facing message.
+        if reason == "busy" then return "이미 방 또는 매치에 참여 중이에요" end
+        if reason == "not_found" then return "그런 방이 없어요. 코드를 확인해 주세요" end
+        if reason == "full" then return "방이 가득 찼어요" end
+        if reason == "started" then return "이미 시작된 방이에요" end
+        if reason == "no_code" then return "방을 만들 수 없어요. 잠시 후 다시 시도해 주세요" end
+        if reason == "not_host" then return "방장만 시작할 수 있어요" end
+        if reason == "need_more" then return "친구가 입장해야 시작할 수 있어요" end
+        return "오류가 발생했어요"
+    end
+
+    method void OnRoomError(string reason)
+        -- Server bridge: a create/join/start request failed. The message lands in whichever view is
+        -- active: room view (waitLabel) for start errors, join view (joinStatus) for join errors,
+        -- otherwise the code-menu (codeStatus) for create errors. A failed create/join clears wantRoom
+        -- so a stale OnRoomJoined cannot later open a room the player no longer expects.
+        log("[RoomController] error reason=" .. tostring(reason))
+        local msg = self:ErrorMessage(reason)
+        if self.currentView == "room" then
+            if isvalid(self.waitLabel) then self.waitLabel.Text = msg end
+        elseif self.currentView == "join" then
+            self.wantRoom = false
+            if isvalid(self.joinStatus) then self.joinStatus.Text = msg end
+        else
+            self.wantRoom = false
+            if isvalid(self.codeStatus) then self.codeStatus.Text = msg end
+        end
+    end
+
+    method void OnEndPlay()
+        -- Disconnects all button handlers (mirror of OnBeginPlay).
+        if self.randomHandler ~= nil and isvalid(self.btnRandom) then
+            self.btnRandom.Entity:DisconnectEvent(ButtonClickEvent, self.randomHandler)
+        end
+        if self.codeHandler ~= nil and isvalid(self.btnCode) then
+            self.btnCode.Entity:DisconnectEvent(ButtonClickEvent, self.codeHandler)
+        end
+        if self.menuBackHandler ~= nil and isvalid(self.btnMenuBack) then
+            self.btnMenuBack.Entity:DisconnectEvent(ButtonClickEvent, self.menuBackHandler)
+        end
+        if self.createHandler ~= nil and isvalid(self.btnCreate) then
+            self.btnCreate.Entity:DisconnectEvent(ButtonClickEvent, self.createHandler)
+        end
+        if self.joinMenuHandler ~= nil and isvalid(self.btnJoinMenu) then
+            self.btnJoinMenu.Entity:DisconnectEvent(ButtonClickEvent, self.joinMenuHandler)
+        end
+        if self.codeBackHandler ~= nil and isvalid(self.btnCodeBack) then
+            self.btnCodeBack.Entity:DisconnectEvent(ButtonClickEvent, self.codeBackHandler)
+        end
+        if self.joinConfirmHandler ~= nil and isvalid(self.btnJoinConfirm) then
+            self.btnJoinConfirm.Entity:DisconnectEvent(ButtonClickEvent, self.joinConfirmHandler)
+        end
+        if self.joinBackHandler ~= nil and isvalid(self.btnJoinBack) then
+            self.btnJoinBack.Entity:DisconnectEvent(ButtonClickEvent, self.joinBackHandler)
+        end
+        if self.startHandler ~= nil and isvalid(self.btnStart) then
+            self.btnStart.Entity:DisconnectEvent(ButtonClickEvent, self.startHandler)
+        end
+        if self.leaveHandler ~= nil and isvalid(self.btnLeave) then
+            self.btnLeave.Entity:DisconnectEvent(ButtonClickEvent, self.leaveHandler)
+        end
+        self.randomHandler = nil
+        self.codeHandler = nil
+        self.menuBackHandler = nil
+        self.createHandler = nil
+        self.joinMenuHandler = nil
+        self.codeBackHandler = nil
+        self.joinConfirmHandler = nil
+        self.joinBackHandler = nil
+        self.startHandler = nil
+        self.leaveHandler = nil
+    end
+
+end
