@@ -14,6 +14,9 @@ script MatchmakingController extends Logic
 
     -- EventHandlerBase tokens must be `any` (msw-scripting §5); nil until OnBeginPlay wires them.
     property any cancelHandler = nil
+    -- Pending not-found auto-dismiss timer id (0 = none). Stored so a re-entry (Cancel->reopen) or a
+    -- match arriving during the 1.8s notice can cancel a stale dismissal — see CancelTimeoutDismiss().
+    property integer timeoutTimerId = 0
 
     method void OnBeginPlay()
         -- Wires the Cancel button. A @Logic OnBeginPlay runs on BOTH server and client; on the
@@ -31,13 +34,22 @@ script MatchmakingController extends Logic
     method void Show()
         -- Enables the matchmaking panel + dimmer in searching state (overlay hidden).
         -- Then enqueues the local player into the matchmaking queue (server RPC).
+        -- A new attempt begins here: cancel any pending not-found dismissal so a stale closure from a
+        -- previous timeout cannot tear this fresh attempt down (the panel is interactive during the
+        -- 1.8s notice, so reopen can race the old timer). Done before the idempotency guard so it runs
+        -- on every Show entry.
+        self:CancelTimeoutDismiss()
         -- Idempotent on the controller side: if already showing (panel enabled), skip re-enqueue.
         -- MatchService also guards server-side, but this avoids a redundant RPC + spurious log.
         if isvalid(self.panel) and self.panel.Enable then return end
         if isvalid(self.panel) then self.panel.Enable = true end
         if isvalid(self.dimmer) then self.dimmer.Enable = true end
-        -- Reset to searching state (overlay off, searching labels on).
-        if isvalid(self.searchingLabel) then self.searchingLabel.Entity.Enable = true end
+        -- Reset to searching state (overlay off, searching labels on). Re-set the searching text in
+        -- case a prior attempt left the "상대를 찾지 못했어요" notice on this label.
+        if isvalid(self.searchingLabel) then
+            self.searchingLabel.Entity.Enable = true
+            self.searchingLabel.Text = "상대를 찾는 중..."
+        end
         if isvalid(self.countLabel) then self.countLabel.Entity.Enable = true end
         if isvalid(self.matchFoundOverlay) then self.matchFoundOverlay.Enable = false end
         -- Fire the server-side enqueue RPC (ClientOnly -> @ExecSpace("Server") on MatchService).
@@ -51,11 +63,31 @@ script MatchmakingController extends Logic
         if isvalid(self.dimmer) then self.dimmer.Enable = false end
     end
 
+    method void CancelTimeoutDismiss()
+        -- Cancels the pending not-found auto-dismiss timer if one is scheduled (safe no-op otherwise).
+        -- The dismiss must be bound to the attempt that scheduled it: during the 1.8s notice the panel
+        -- stays interactive, so a quick Cancel-then-retry (or a late match) re-opens/re-queues the
+        -- player — without this, the stale closure would Hide() the freshly-reopened panel and bounce
+        -- them to the title while still queued server-side. ClearTimer on id=0 would be a no-op anyway,
+        -- but guard explicitly so the sentinel reset stays paired with the cancel.
+        if self.timeoutTimerId ~= 0 then
+            _TimerService:ClearTimer(self.timeoutTimerId)
+            self.timeoutTimerId = 0
+        end
+    end
+
     method void OnCancel()
-        -- Cancel button handler: removes the local player from the queue and hides the screen.
+        -- Cancel button handler: removes the local player from the queue, hides the screen, and
+        -- returns to the title (TitleController.OnMulti hid the title when opening this screen, so
+        -- without this the player would be left staring at the bare board behind the dimmer).
+        -- Cancel any pending not-found dismissal first: the player is leaving to the title now, so a
+        -- later stale closure would double-invoke _TitleController:Show() (and could fire after a
+        -- subsequent reopen). This also covers tapping Cancel during the 1.8s not-found notice.
+        self:CancelTimeoutDismiss()
         _MatchService:CancelQueue()
         self:Hide()
-        log("[MatchmakingController] cancelled")
+        if _TitleController ~= nil then _TitleController:Show() end
+        log("[MatchmakingController] cancelled -> title")
     end
 
     method void OnMatchFound(table rosterNames, integer mySlot)
@@ -63,6 +95,9 @@ script MatchmakingController extends Logic
         -- Switches the panel from searching state to match-found/roster view.
         -- rosterNames is a flat array of display-name strings (parallel to match.roster).
         log("[MatchmakingController] match found slot=" .. tostring(mySlot))
+        -- A match arrived: cancel any pending not-found dismissal so a stale timer from a previous
+        -- (timed-out) attempt cannot yank this matched player back to the title mid-countdown.
+        self:CancelTimeoutDismiss()
         -- Hide searching labels.
         if isvalid(self.searchingLabel) then self.searchingLabel.Entity.Enable = false end
         if isvalid(self.countLabel) then self.countLabel.Entity.Enable = false end
@@ -91,6 +126,30 @@ script MatchmakingController extends Logic
         end
     end
 
+    method void OnMatchTimeout()
+        -- Called by MatchService @Client bridge when no opponent was found within QUEUE_TIMEOUT.
+        -- Multi requires a real opponent, so there is no solo fallback: show a brief notice on the
+        -- searching label, then dismiss matchmaking and return to the title.
+        log("[MatchmakingController] match timeout -> no opponent, return to title")
+        if isvalid(self.matchFoundOverlay) then self.matchFoundOverlay.Enable = false end
+        if isvalid(self.countLabel) then self.countLabel.Entity.Enable = false end
+        if isvalid(self.searchingLabel) then
+            self.searchingLabel.Entity.Enable = true
+            self.searchingLabel.Text = "상대를 찾지 못했어요"
+        end
+        -- Brief beat so the player can read the notice, then dismiss + reopen the title. Store the
+        -- timer id (and pre-cancel any prior pending one) so this dismissal is bound to THIS attempt:
+        -- the panel stays interactive during the notice, and Show()/OnCancel()/OnMatchFound() clear
+        -- the id on re-entry so a stale closure can never tear down a freshly-reopened/matched panel.
+        -- The closure self-clears the id when it legitimately fires (so a later cancel is a no-op).
+        self:CancelTimeoutDismiss()
+        self.timeoutTimerId = _TimerService:SetTimerOnce(function()
+            self.timeoutTimerId = 0
+            self:Hide()
+            if _TitleController ~= nil then _TitleController:Show() end
+        end, 1.8)
+    end
+
     method void OnMatchStart(string matchId, string board, string token, table rosterNames)
         -- Called by MatchService @Client bridge when the countdown reaches 0.
         -- Resolves GameSession off the local player's current map and hands off to gameplay.
@@ -109,11 +168,13 @@ script MatchmakingController extends Logic
     end
 
     method void OnEndPlay()
-        -- Disconnects the Cancel button handler (mirror of OnBeginPlay).
+        -- Disconnects the Cancel button handler (mirror of OnBeginPlay) and clears any pending
+        -- not-found dismiss timer (mandatory timer cleanup per the OnBeginPlay/OnEndPlay pairing rule).
         if self.cancelHandler ~= nil and isvalid(self.btnCancel) then
             self.btnCancel.Entity:DisconnectEvent(ButtonClickEvent, self.cancelHandler)
         end
         self.cancelHandler = nil
+        self:CancelTimeoutDismiss()
     end
 
 end

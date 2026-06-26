@@ -4,9 +4,12 @@ script MatchService extends Logic
     -- FSM states: IDLE -> QUEUED -> MATCHED -> COUNTDOWN -> RACING -> FINISHED -> RESULTS -> IDLE
     -- Driven by a 1 Hz server tick (SetTimerRepeat). Settlement (ELO, persist, result fan-out)
     -- is Task 7 — only stubs are provided here.
-    property integer MATCH_SIZE = 1
+    property integer MATCH_SIZE = 2
     property number RACE_DEADLINE = 125
     property number COUNTDOWN = 3
+    -- Multi requires a REAL opponent (MATCH_SIZE>=2). A lone player who never gets matched is bailed
+    -- back to the title after this many 1 Hz Tick ticks rather than waiting forever (no solo fallback).
+    property integer QUEUE_TIMEOUT = 15
     property integer tickTimerId = 0
     property any leaveHandler = nil
 
@@ -20,6 +23,8 @@ script MatchService extends Logic
         self._T.matches      = {}
         self._T.userToMatch  = {}
         self._T.nextMatchSeq = 0
+        -- 1 Hz tick clock used to age queue entries for QUEUE_TIMEOUT bookkeeping.
+        self._T.tickCount    = 0
         self.tickTimerId = _TimerService:SetTimerRepeat(function() self:Tick() end, 1.0)
         log("[Match] MatchService OnBeginPlay — tick timer started id=" .. tostring(self.tickTimerId))
         -- Subscribe UserLeaveEvent for forfeit handling (server only).
@@ -55,6 +60,9 @@ script MatchService extends Logic
     method void Tick()
         -- Guard: the timer callback fires on both server and client in a @Logic.
         if not self:IsServer() then return end
+        -- Advance the 1 Hz tick clock first so newly-enqueued users (stamped with the current
+        -- tickCount in EnqueueMatch) are never aged by their own enqueue tick.
+        self._T.tickCount = self._T.tickCount + 1
 
         -- Step 1: drain the queue — pop up to MATCH_SIZE users into a new match.
         local queuedUsers = {}
@@ -69,6 +77,22 @@ script MatchService extends Logic
                 self._T.queue[uid] = nil
             end
             self:FormMatch(queuedUsers)
+        end
+
+        -- Step 1b: time out anyone still waiting after QUEUE_TIMEOUT ticks. With MATCH_SIZE>=2 a lone
+        -- player can sit in the queue indefinitely; rather than leave them stranded we drop them and
+        -- tell their client to return to the title (no solo fallback). Collect first, then mutate /
+        -- notify outside the pairs() traversal (same no-mutate-while-iterating discipline as Step 3).
+        local timedOut = {}
+        for uid, enqTick in pairs(self._T.queue) do
+            if self._T.tickCount - enqTick >= self.QUEUE_TIMEOUT then
+                table.insert(timedOut, uid)
+            end
+        end
+        for _, uid in ipairs(timedOut) do
+            self._T.queue[uid] = nil
+            log("[Match] queue timeout — no opponent userId=" .. uid)
+            self:OnMatchTimeout(uid)
         end
 
         -- Step 2: advance each existing match through the FSM. Collect matches that reach
@@ -420,8 +444,9 @@ script MatchService extends Logic
             log("[Match] EnqueueMatch ignored — already queued userId=" .. senderUserId)
             return
         end
-        self._T.queue[senderUserId] = true
-        log("[Match] queued userId=" .. senderUserId)
+        -- Stamp the enqueue tick so the Tick sweep can age this entry against QUEUE_TIMEOUT.
+        self._T.queue[senderUserId] = self._T.tickCount
+        log("[Match] queued userId=" .. senderUserId .. " tick=" .. tostring(self._T.tickCount))
     end
 
     @ExecSpace("Server")
@@ -545,6 +570,16 @@ script MatchService extends Logic
         -- [Task9/10 bridge] _MatchmakingController does not exist yet (Task 9 creates it).
         if _MatchmakingController ~= nil then
             _MatchmakingController:OnCountdown(matchId, n)
+        end
+    end
+
+    @ExecSpace("Client")
+    method void OnMatchTimeout()
+        -- Server -> one client: no opponent was found within QUEUE_TIMEOUT. Tell this player's
+        -- matchmaking UI to show the not-found notice and return to the title (no solo fallback).
+        log("[Match] OnMatchTimeout (client bridge)")
+        if _MatchmakingController ~= nil then
+            _MatchmakingController:OnMatchTimeout()
         end
     end
 
